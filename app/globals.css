@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: #050308;
+  color: #f3eee7;
+  font-family: ui-sans-serif, -apple-system, "PingFang SC", "Microsoft YaHei",
+    "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.starfield {
+  background:
+    radial-gradient(1px 1px at 20% 30%, rgba(255, 255, 255, 0.6), transparent),
+    radial-gradient(1px 1px at 70% 80%, rgba(255, 255, 255, 0.45), transparent),
+    radial-gradient(1px 1px at 40% 60%, rgba(255, 255, 255, 0.35), transparent),
+    radial-gradient(2px 2px at 85% 15%, rgba(255, 255, 255, 0.5), transparent),
+    radial-gradient(1.5px 1.5px at 10% 80%, rgba(255, 255, 255, 0.4), transparent);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  animation: drift 60s ease-in-out infinite;
+}
+
+@keyframes drift {
+  0%, 100% { transform: translate3d(0, 0, 0); opacity: 0.6; }
+  50% { transform: translate3d(-12px, 8px, 0); opacity: 0.9; }
+}
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); filter: blur(0px); }
+  50% { transform: scale(1.04); filter: blur(0.4px); }
+}
+
+.glow-ring {
+  animation: breathe 7s ease-in-out infinite;
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
+}
+
+input.zen-input,
+textarea.zen-input {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #f3eee7;
+  caret-color: #f3eee7;
+  outline: none;
+  transition: all 0.25s ease;
+}
+
+input.zen-input:focus,
+textarea.zen-input:focus {
+  border-color: rgba(255, 220, 180, 0.55);
+  box-shadow: 0 0 28px rgba(255, 200, 130, 0.18);
+}
+
+/* Subtle scanline / film grain to feel cinematic */
+.grain::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 3px 3px;
+  mix-blend-mode: overlay;
+  opacity: 0.5;
+  z-index: 50;
+}
