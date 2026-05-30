@@ -6,12 +6,15 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const IMAGE_DATA_URL_RE = /^data:image\/(png|jpe?g|webp);base64,/i;
+const VIDEO_DATA_URL_RE = /^data:video\/(mp4|quicktime);base64,/i;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const mode = body?.mode === "image" ? "image" : "text";
+    const mode =
+      body?.mode === "image" || body?.mode === "video" ? body.mode : "text";
     const provider = normalizeEmbeddingProvider(body?.provider);
 
     if (mode === "image") {
@@ -31,6 +34,28 @@ export async function POST(req: NextRequest) {
       }
       const result = await synesthesize(
         { type: "image", imageDataUrl },
+        { provider },
+      );
+      return NextResponse.json(result);
+    }
+
+    if (mode === "video") {
+      const videoDataUrl = body?.videoDataUrl;
+      if (typeof videoDataUrl !== "string" || !VIDEO_DATA_URL_RE.test(videoDataUrl)) {
+        return NextResponse.json(
+          { error: "请上传 MP4 或 MOV 视频" },
+          { status: 400 },
+        );
+      }
+      const [, base64 = ""] = videoDataUrl.split(",", 2);
+      if (Buffer.byteLength(base64, "base64") > MAX_VIDEO_BYTES) {
+        return NextResponse.json(
+          { error: "视频太大了, 请控制在 50MB 以内" },
+          { status: 400 },
+        );
+      }
+      const result = await synesthesize(
+        { type: "video", videoDataUrl },
         { provider },
       );
       return NextResponse.json(result);

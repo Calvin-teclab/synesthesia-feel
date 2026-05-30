@@ -19,7 +19,7 @@ import {
 import { playEar } from "@/lib/audio";
 import type { EmbeddingProvider } from "@/lib/ark";
 
-type InputMode = "text" | "image";
+type InputMode = "text" | "image" | "video";
 type WorkbenchTab = "map" | "eval" | "blend";
 
 interface SenseHit<T> {
@@ -130,6 +130,8 @@ export default function Page() {
     useState<EmbeddingProvider>("ark");
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageName, setImageName] = useState<string | null>(null);
+  const [videoDataUrl, setVideoDataUrl] = useState<string | null>(null);
+  const [videoName, setVideoName] = useState<string | null>(null);
   const [result, setResult] = useState<ApiResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -241,6 +243,10 @@ export default function Page() {
         setError("请先上传一张图片");
         return;
       }
+      if (nextMode === "video" && !videoDataUrl) {
+        setError("请先上传一段视频");
+        return;
+      }
       setLoading(true);
       setError(null);
       try {
@@ -250,7 +256,9 @@ export default function Page() {
           body: JSON.stringify(
             nextMode === "image"
               ? { mode: "image", imageDataUrl, provider: embeddingProvider }
-              : { mode: "text", text: t, provider: embeddingProvider },
+              : nextMode === "video"
+                ? { mode: "video", videoDataUrl, provider: embeddingProvider }
+                : { mode: "text", text: t, provider: embeddingProvider },
           ),
         });
         const json = await res.json();
@@ -262,6 +270,11 @@ export default function Page() {
           setImageName(null);
           if (fileRef.current) fileRef.current.value = "";
         }
+        if (nextMode === "video") {
+          setVideoDataUrl(null);
+          setVideoName(null);
+          if (fileRef.current) fileRef.current.value = "";
+        }
         // Play the ear-anchor a beat after the orb starts to shift
         setTimeout(() => playEar(json.hits.ear.blend), 250);
       } catch (e: any) {
@@ -270,7 +283,7 @@ export default function Page() {
         setLoading(false);
       }
     },
-    [embeddingProvider, imageDataUrl, loading, mode, text],
+    [embeddingProvider, imageDataUrl, loading, mode, text, videoDataUrl],
   );
 
   const onSubmit = (e: React.FormEvent) => {
@@ -298,6 +311,36 @@ export default function Page() {
     };
     reader.onerror = () => setError("图片读取失败, 请换一张试试");
     reader.readAsDataURL(file);
+  };
+
+  const handleVideo = (file: File | undefined) => {
+    if (!file) return;
+    if (!/^video\/(mp4|quicktime)$/i.test(file.type)) {
+      setError("请上传 MP4 或 MOV 视频");
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      setError("视频太大了, 请控制在 50MB 以内");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+      setVideoDataUrl(reader.result);
+      setVideoName(file.name);
+      setError(null);
+    };
+    reader.onerror = () => setError("视频读取失败, 请换一段试试");
+    reader.readAsDataURL(file);
+  };
+
+  const handleFile = (file: File | undefined) => {
+    if (mode === "video") {
+      handleVideo(file);
+      return;
+    }
+    handleImage(file);
   };
 
   const earHint = result && (
@@ -336,7 +379,7 @@ export default function Page() {
         </div>
       </div>
 
-      <div className="pointer-events-none absolute left-1/2 top-[58%] z-10 w-[min(520px,58vw)] -translate-x-1/2 -translate-y-1/2">
+      <div className="pointer-events-none absolute left-1/2 top-[53%] z-10 w-[min(520px,58vw)] -translate-x-1/2 -translate-y-1/2">
         <EmbeddingWorkbench
           result={result}
           loading={loading}
@@ -510,7 +553,7 @@ export default function Page() {
       {/* Bottom input */}
       <div className="absolute left-0 right-0 bottom-6 flex flex-col items-center gap-3 z-20 px-6">
         <div className="flex rounded-full border border-white/10 bg-black/25 p-1 backdrop-blur-md">
-          {(["text", "image"] as const).map((item) => (
+          {(["text", "image", "video"] as const).map((item) => (
             <button
               key={item}
               type="button"
@@ -524,7 +567,7 @@ export default function Page() {
                   : "text-white/40 hover:text-white/70"
               }`}
             >
-              {item === "text" ? "文字" : "图片"}
+              {item === "text" ? "文字" : item === "image" ? "图片" : "视频"}
             </button>
           ))}
         </div>
@@ -549,11 +592,18 @@ export default function Page() {
               className="zen-input flex min-w-0 flex-1 items-center gap-3 rounded-full px-4 py-2 text-left text-sm transition hover:border-white/25"
             >
               <span className="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full border border-white/10 bg-white/[0.04] text-white/50">
-                {imageDataUrl ? (
+                {mode === "image" && imageDataUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={imageDataUrl}
                     alt=""
+                    className="h-full w-full object-cover"
+                  />
+                ) : mode === "video" && videoDataUrl ? (
+                  <video
+                    src={videoDataUrl}
+                    muted
+                    playsInline
                     className="h-full w-full object-cover"
                   />
                 ) : (
@@ -561,25 +611,38 @@ export default function Page() {
                 )}
               </span>
               <span className="min-w-0 flex-1 truncate text-white/65">
-                {imageName ??
-                  (result?.inputType === "image"
-                    ? "再上传一张图片，生成新的高维向量"
-                    : "上传一张图片，让它转成通感体验")}
+                {mode === "image"
+                  ? imageName ??
+                    (result?.inputType === "image"
+                      ? "再上传一张图片，生成新的高维向量"
+                      : "上传一张图片，让它转成通感体验")
+                  : videoName ??
+                    (result?.inputType === "video"
+                      ? "再上传一段视频，生成新的高维向量"
+                      : "上传一段视频，提取画面节奏与视觉内容")}
               </span>
             </button>
           )}
           <input
             ref={fileRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp"
+            accept={
+              mode === "video"
+                ? "video/mp4,video/quicktime"
+                : "image/png,image/jpeg,image/webp"
+            }
             className="hidden"
-            onChange={(e) => handleImage(e.target.files?.[0])}
+            onChange={(e) => handleFile(e.target.files?.[0])}
           />
           <button
             type="submit"
             disabled={
               loading ||
-              (mode === "text" ? !text.trim() : imageDataUrl === null)
+              (mode === "text"
+                ? !text.trim()
+                : mode === "image"
+                  ? imageDataUrl === null
+                  : videoDataUrl === null)
             }
             className="rounded-full px-5 py-3 text-sm text-white/90 transition-all disabled:opacity-40"
             style={{

@@ -610,7 +610,11 @@ export async function synesthesize(
   };
 
   const inputLabel =
-    userInput.type === "text" ? userInput.text.trim() : "上传的图片";
+    userInput.type === "text"
+      ? userInput.text.trim()
+      : userInput.type === "image"
+        ? "上传的图片"
+        : "上传的视频";
 
   return {
     input: inputLabel,

@@ -1,6 +1,6 @@
 # 多模态感知-联觉通感 · Synesthesia Engine
 
-把任意一个字、一句诗、一段情绪，或一张图片，投射到佛家所说的「眼耳鼻舌身意」。
+把任意一个字、一句诗、一段情绪，一张图片，或一段视频，投射到佛家所说的「眼耳鼻舌身意」。
 
 ![运行界面](assets/screenshot.png)
 
@@ -30,7 +30,7 @@ npm run dev
 # → http://localhost:3000
 ```
 
-前端可在「火山引擎 / Gemini」之间切换 embedding provider。第一次使用某个 provider/model 时会顺便把 ~45 条锚点也一起 embed；缓存按 `provider:model` 隔离，之后只 embed 用户输入，毫秒级响应。图片输入可走火山多模态 embedding 或 Gemini Embedding 2；其中 Gemini 图片输入支持 PNG/JPG。
+前端可在「火山引擎 / Gemini」之间切换 embedding provider。第一次使用某个 provider/model 时会顺便把 ~45 条锚点也一起 embed；缓存按 `provider:model` 隔离，之后只 embed 用户输入，毫秒级响应。图片和视频输入可走火山多模态 embedding 或 Gemini Embedding 2；其中 Gemini 图片输入支持 PNG/JPG，视频建议使用 MP4/MOV。
 
 ## 玩法建议
 
@@ -40,14 +40,14 @@ npm run dev
 - `雷雨夜里的孤独` —— 耳跟意会不会同时打中"低沉的钟鸣"和"夜深独坐"
 - `刚收到好消息时心跳的瞬间` —— 身的颤动 + 意的澎湃应当被同时点亮
 
-也可以输入古诗一句、人名、概念、甚至带表情符号的微博，感受 embedding 把它"分拣"到六感的过程。若使用 Gemini Embedding 2，或把 `ARK_EMBEDDING_MODEL` 切到火山多模态 embedding 模型，还可以上传图片，让画面被转译成通感体验。
+也可以输入古诗一句、人名、概念、甚至带表情符号的微博，感受 embedding 把它"分拣"到六感的过程。若使用 Gemini Embedding 2，或把 `ARK_EMBEDDING_MODEL` 切到火山多模态 embedding 模型，还可以上传图片或视频，让画面被转译成通感体验。视频输入分析的是视觉帧，不承诺理解音轨。
 
 ## 项目结构
 
 ```
 app/
-  page.tsx                  主体验页（文字/图片输入 + 中央 3D + 六根面板）
-  api/synesthesia/route.ts  POST: 文字/图片 → 六根映射
+  page.tsx                  主体验页（文字/图片/视频输入 + 中央 3D + 六根面板）
+  api/synesthesia/route.ts  POST: 文字/图片/视频 → 六根映射
 components/
   ParticleField.tsx         Three.js 粒子云 + 自定义 GLSL
   SenseCard.tsx             单一感官的玻璃质感卡片

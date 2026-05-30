@@ -22,7 +22,8 @@ interface GeminiEmbeddingResponse {
 
 export type EmbedInput =
   | { type: "text"; text: string }
-  | { type: "image"; imageDataUrl: string };
+  | { type: "image"; imageDataUrl: string }
+  | { type: "video"; videoDataUrl: string };
 
 export type EmbeddingProvider = "ark" | "gemini";
 
@@ -45,6 +46,10 @@ function isMultimodalModel(model: string): boolean {
   return /vision|multimodal|mm/i.test(model);
 }
 
+function supportsArkInstructions(model: string): boolean {
+  return /251215|26\d{4}|27\d{4}/.test(model);
+}
+
 export function normalizeEmbeddingProvider(
   provider: unknown,
 ): EmbeddingProvider {
@@ -62,7 +67,7 @@ export function getEmbeddingConfig(
   }
 
   const model =
-    process.env.ARK_EMBEDDING_MODEL || "doubao-embedding-text-240715";
+    process.env.ARK_EMBEDDING_MODEL || "doubao-embedding-vision-251215";
   return { provider, model, cacheKey: `${provider}:${model}` };
 }
 
@@ -106,7 +111,19 @@ async function embedMultimodalOne(
   const multimodalInput =
     input.type === "text"
       ? [{ type: "text", text: input.text }]
-      : [{ type: "image_url", image_url: { url: input.imageDataUrl } }];
+      : input.type === "image"
+        ? [{ type: "image_url", image_url: { url: input.imageDataUrl } }]
+        : [{ type: "video_url", video_url: { url: input.videoDataUrl } }];
+
+  const body: Record<string, unknown> = {
+    model,
+    input: multimodalInput,
+    encoding_format: "float",
+  };
+  if (supportsArkInstructions(model)) {
+    body.instructions =
+      "Target_modality: text/image/video.\nInstruction:Retrieve semantically similar sensory impressions across text, image and video\nQuery:";
+  }
 
   const res = await fetch(MM_ENDPOINT, {
     method: "POST",
@@ -114,11 +131,7 @@ async function embedMultimodalOne(
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model,
-      input: multimodalInput,
-      encoding_format: "float",
-    }),
+    body: JSON.stringify(body),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -145,10 +158,12 @@ async function embedMultimodal(
   return Promise.all(inputs.map((input) => embedMultimodalOne(apiKey, model, input)));
 }
 
-function dataUrlToGeminiPart(imageDataUrl: string) {
-  const match = imageDataUrl.match(/^data:(image\/(?:png|jpe?g|webp));base64,(.+)$/i);
+function dataUrlToGeminiPart(dataUrl: string) {
+  const match = dataUrl.match(
+    /^data:((?:image\/(?:png|jpe?g|webp))|(?:video\/(?:mp4|quicktime)));base64,(.+)$/i,
+  );
   if (!match) {
-    throw new Error("Gemini 图片输入需要 PNG 或 JPG 格式。");
+    throw new Error("Gemini 输入需要 PNG/JPG 图片或 MP4/MOV 视频。");
   }
 
   const [, mimeType, data] = match;
@@ -172,7 +187,11 @@ function geminiParts(input: EmbedInput) {
   if (input.type === "text") {
     return [{ text: input.text }];
   }
-  return [dataUrlToGeminiPart(input.imageDataUrl)];
+  return [
+    dataUrlToGeminiPart(
+      input.type === "image" ? input.imageDataUrl : input.videoDataUrl,
+    ),
+  ];
 }
 
 async function embedGeminiOne(
@@ -273,10 +292,10 @@ export async function embedInputs(
     return embedMultimodal(apiKey, model, inputs);
   }
 
-  const imageInput = inputs.find((input) => input.type === "image");
-  if (imageInput) {
+  const mediaInput = inputs.find((input) => input.type !== "text");
+  if (mediaInput) {
     throw new Error(
-      "图片联觉需要把 ARK_EMBEDDING_MODEL 设置为多模态 embedding 模型，例如 doubao-embedding-vision-251215。",
+      "图片/视频联觉需要把 ARK_EMBEDDING_MODEL 设置为多模态 embedding 模型，例如 doubao-embedding-vision-251215。",
     );
   }
 
