@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import ParticleField, {
   ParticleParams,
@@ -17,6 +17,7 @@ import {
   TongueAnchor,
 } from "@/lib/anchors";
 import { playEar } from "@/lib/audio";
+import type { EmbeddingProvider } from "@/lib/ark";
 
 type InputMode = "text" | "image";
 type WorkbenchTab = "map" | "eval" | "blend";
@@ -35,6 +36,8 @@ interface SenseHit<T> {
 interface ApiResult {
   input: string;
   inputType: InputMode;
+  provider: EmbeddingProvider;
+  model: string;
   signature: number[];
   profile: number[];
   vector: {
@@ -111,6 +114,11 @@ const PRESETS = [
   "刚收到好消息时心跳的瞬间",
 ];
 
+const PROVIDERS: { id: EmbeddingProvider; label: string }[] = [
+  { id: "ark", label: "火山引擎" },
+  { id: "gemini", label: "Gemini" },
+];
+
 function hslCss(h: number, s: number, l: number, a = 1) {
   return `hsla(${((h % 360) + 360) % 360}, ${s}%, ${l}%, ${a})`;
 }
@@ -118,6 +126,8 @@ function hslCss(h: number, s: number, l: number, a = 1) {
 export default function Page() {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<InputMode>("text");
+  const [embeddingProvider, setEmbeddingProvider] =
+    useState<EmbeddingProvider>("ark");
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageName, setImageName] = useState<string | null>(null);
   const [result, setResult] = useState<ApiResult | null>(null);
@@ -127,6 +137,9 @@ export default function Page() {
   const [evalResult, setEvalResult] = useState<EvaluationResult | null>(null);
   const [evalLoading, setEvalLoading] = useState(false);
   const [evalError, setEvalError] = useState<string | null>(null);
+  const [providerModels, setProviderModels] = useState<
+    Partial<Record<EmbeddingProvider, string>>
+  >({});
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -175,12 +188,40 @@ export default function Page() {
     playEar(result.hits.ear.blend);
   }, [result]);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/embedding-config", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (!cancelled && json?.providers) {
+          setProviderModels(json.providers);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectEmbeddingProvider = useCallback(
+    (provider: EmbeddingProvider) => {
+      setEmbeddingProvider(provider);
+      setEvalResult(null);
+      setEvalError(null);
+      setError(null);
+    },
+    [],
+  );
+
   const runEvaluation = useCallback(async () => {
     if (evalLoading) return;
     setEvalLoading(true);
     setEvalError(null);
     try {
-      const res = await fetch("/api/embedding-eval", { cache: "no-store" });
+      const res = await fetch(
+        `/api/embedding-eval?provider=${embeddingProvider}`,
+        { cache: "no-store" },
+      );
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Evaluation failed");
       setEvalResult(json);
@@ -189,7 +230,7 @@ export default function Page() {
     } finally {
       setEvalLoading(false);
     }
-  }, [evalLoading]);
+  }, [embeddingProvider, evalLoading]);
 
   const submit = useCallback(
     async (raw?: string, nextMode = mode) => {
@@ -208,8 +249,8 @@ export default function Page() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(
             nextMode === "image"
-              ? { mode: "image", imageDataUrl }
-              : { mode: "text", text: t },
+              ? { mode: "image", imageDataUrl, provider: embeddingProvider }
+              : { mode: "text", text: t, provider: embeddingProvider },
           ),
         });
         const json = await res.json();
@@ -229,7 +270,7 @@ export default function Page() {
         setLoading(false);
       }
     },
-    [imageDataUrl, loading, mode, text],
+    [embeddingProvider, imageDataUrl, loading, mode, text],
   );
 
   const onSubmit = (e: React.FormEvent) => {
@@ -322,6 +363,50 @@ export default function Page() {
           就像神经里的联觉, 把眼耳鼻舌身意彼此唤醒.
         </p>
       </header>
+
+      <div className="absolute right-4 top-4 z-30 flex items-center gap-2 rounded-full border border-white/10 bg-black/30 px-2 py-1.5 shadow-[0_16px_48px_rgba(0,0,0,0.28)] backdrop-blur-md sm:right-6 sm:top-6">
+        <span className="hidden pl-2 text-[10px] uppercase tracking-[0.22em] text-white/35 sm:inline">
+          模型
+        </span>
+        <div className="flex rounded-full bg-white/[0.04] p-1">
+          {PROVIDERS.map((provider) => (
+            <span key={provider.id} className="group relative">
+              <button
+                type="button"
+                onClick={() => selectEmbeddingProvider(provider.id)}
+                aria-label={`${provider.label} 模型：${
+                  providerModels[provider.id] ?? "读取模型配置中"
+                }`}
+                className={`rounded-full px-3 py-1.5 text-[10px] tracking-[0.14em] transition sm:px-3.5 ${
+                  embeddingProvider === provider.id
+                    ? "bg-white/[0.14] text-white shadow-[0_0_18px_rgba(255,255,255,0.08)]"
+                    : "text-white/42 hover:text-white/76"
+                }`}
+              >
+                {provider.label}
+              </button>
+              <span className="pointer-events-none absolute left-1/2 top-full z-40 mt-3 -translate-x-1/2 whitespace-nowrap rounded-lg border border-white/10 bg-black/72 px-3 py-2 text-[10px] tracking-[0.12em] text-white/72 opacity-0 shadow-[0_16px_44px_rgba(0,0,0,0.38)] backdrop-blur-md transition duration-150 group-hover:translate-y-0 group-hover:opacity-100">
+                <span className="text-white/38">{provider.label}</span>
+                <span className="mx-1.5 text-white/20">/</span>
+                <span>{providerModels[provider.id] ?? "读取模型配置中"}</span>
+              </span>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, y: -6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.98 }}
+            className="absolute right-4 top-20 z-30 max-w-[360px] rounded-lg border border-rose-300/20 bg-rose-950/35 px-4 py-3 text-xs leading-relaxed text-rose-100 shadow-[0_18px_52px_rgba(0,0,0,0.34)] backdrop-blur-md sm:right-6"
+          >
+            {error}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Left column */}
       <div className="absolute left-4 sm:left-8 top-0 bottom-0 flex flex-col justify-center gap-4 z-10 pointer-events-auto">
@@ -424,19 +509,6 @@ export default function Page() {
 
       {/* Bottom input */}
       <div className="absolute left-0 right-0 bottom-6 flex flex-col items-center gap-3 z-20 px-6">
-        <AnimatePresence>
-          {error && (
-            <motion.p
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              className="text-xs text-rose-300"
-            >
-              {error}
-            </motion.p>
-          )}
-        </AnimatePresence>
-
         <div className="flex rounded-full border border-white/10 bg-black/25 p-1 backdrop-blur-md">
           {(["text", "image"] as const).map((item) => (
             <button
@@ -758,7 +830,7 @@ function EmbeddingMapPanel({
       <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 text-[10px] text-white/38">
         <span className="shrink-0">
           {result
-            ? `${result.vector.dimensions}D · 均幅 ${result.vector.meanAbs.toFixed(4)}`
+            ? `${result.provider === "gemini" ? "Gemini" : "火山引擎"} · ${result.vector.dimensions}D · 均幅 ${result.vector.meanAbs.toFixed(4)}`
             : "Anchor PCA + 当前输入投影"}
         </span>
         {strongest.length > 0 && (

@@ -21,16 +21,16 @@
 # 1. 安装依赖（已装）
 npm install
 
-# 2. 配置 ARK key
+# 2. 配置 Embedding key
 cp .env.example .env.local
-# 编辑 .env.local 填入你的 ARK_API_KEY
+# 编辑 .env.local 填入 ARK_API_KEY 和/或 GEMINI_API_KEY
 
 # 3. 启动
 npm run dev
 # → http://localhost:3000
 ```
 
-第一次提交输入会顺便把 ~45 条锚点也一起 embed（一次性 ~1 个 batch），之后只 embed 用户输入，毫秒级响应。
+前端可在「火山引擎 / Gemini」之间切换 embedding provider。第一次使用某个 provider/model 时会顺便把 ~45 条锚点也一起 embed；缓存按 `provider:model` 隔离，之后只 embed 用户输入，毫秒级响应。图片输入可走火山多模态 embedding 或 Gemini Embedding 2；其中 Gemini 图片输入支持 PNG/JPG。
 
 ## 玩法建议
 
@@ -40,7 +40,7 @@ npm run dev
 - `雷雨夜里的孤独` —— 耳跟意会不会同时打中"低沉的钟鸣"和"夜深独坐"
 - `刚收到好消息时心跳的瞬间` —— 身的颤动 + 意的澎湃应当被同时点亮
 
-也可以输入古诗一句、人名、概念、甚至带表情符号的微博，感受 embedding 把它"分拣"到六感的过程。若把 `ARK_EMBEDDING_MODEL` 切到多模态 embedding 模型，还可以上传图片，让画面被转译成通感体验。
+也可以输入古诗一句、人名、概念、甚至带表情符号的微博，感受 embedding 把它"分拣"到六感的过程。若使用 Gemini Embedding 2，或把 `ARK_EMBEDDING_MODEL` 切到火山多模态 embedding 模型，还可以上传图片，让画面被转译成通感体验。
 
 ## 项目结构
 
@@ -53,7 +53,7 @@ components/
   SenseCard.tsx             单一感官的玻璃质感卡片
 lib/
   anchors.ts                六根的"原型概念"与渲染参数
-  ark.ts                    火山方舟 doubao-embedding API
+  ark.ts                    火山方舟 / Gemini embedding API
   mapping.ts                cosine + softmax + signature 压缩
   audio.ts                  Web Audio 实时合成器
 ```

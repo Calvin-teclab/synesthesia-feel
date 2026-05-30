@@ -1,4 +1,10 @@
-import { embed, embedInputs, EmbedInput } from "./ark";
+import {
+  embed,
+  embedInputs,
+  EmbedInput,
+  EmbeddingProvider,
+  getEmbeddingConfig,
+} from "./ark";
 import {
   BodyAnchor,
   EarAnchor,
@@ -24,16 +30,27 @@ export function cosine(a: number[], b: number[]): number {
   return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-9);
 }
 
-/** In-process cache for anchor embeddings. Survives across requests in dev/prod. */
-let anchorCache: { sense: Sense; index: number; text: string; vec: number[] }[] | null =
-  null;
+type AnchorEmbedding = { sense: Sense; index: number; text: string; vec: number[] };
 
-export async function getAnchorEmbeddings() {
-  if (anchorCache) return anchorCache;
+/** In-process cache for anchor embeddings. Keyed by provider/model vector space. */
+const anchorCache = new Map<string, Promise<AnchorEmbedding[]>>();
+
+export async function getAnchorEmbeddings(provider: EmbeddingProvider = "ark") {
+  const config = getEmbeddingConfig(provider);
+  const cached = anchorCache.get(config.cacheKey);
+  if (cached) return cached;
   const flat = flatAnchorList();
-  const vecs = await embed(flat.map((a) => a.text));
-  anchorCache = flat.map((a, i) => ({ ...a, vec: vecs[i] }));
-  return anchorCache;
+  const pending = embed(
+    flat.map((a) => a.text),
+    { provider: config.provider },
+  )
+    .then((vecs) => flat.map((a, i) => ({ ...a, vec: vecs[i] })))
+    .catch((error) => {
+      anchorCache.delete(config.cacheKey);
+      throw error;
+    });
+  anchorCache.set(config.cacheKey, pending);
+  return pending;
 }
 
 export interface SenseHit<TAnchor = unknown> {
@@ -53,6 +70,8 @@ export interface SenseHit<TAnchor = unknown> {
 export interface SynesthesiaResult {
   input: string;
   inputType: EmbedInput["type"];
+  provider: EmbeddingProvider;
+  model: string;
   /** ~64 dims of the user's embedding, normalized to [-1, 1], for shader use. */
   signature: number[];
   /** Folded projection of the full embedding for particle geometry. */
@@ -206,7 +225,7 @@ function principalComponent(rows: number[][], previous?: number[]): number[] {
   return component;
 }
 
-let mapBasisCache: {
+type MapBasis = {
   mean: number[];
   pc1: number[];
   pc2: number[];
@@ -217,14 +236,18 @@ let mapBasisCache: {
     sense: Sense;
     label: string;
     x: number;
-    y: number;
-  }[];
-} | null = null;
+      y: number;
+    }[];
+};
+
+const mapBasisCache = new Map<string, MapBasis>();
 
 function getMapBasis(
-  anchors: { sense: Sense; index: number; text: string; vec: number[] }[],
+  anchors: AnchorEmbedding[],
+  cacheKey: string,
 ) {
-  if (mapBasisCache) return mapBasisCache;
+  const cached = mapBasisCache.get(cacheKey);
+  if (cached) return cached;
 
   const { mean, centered } = centerRows(anchors.map((anchor) => anchor.vec));
   const pc1 = principalComponent(centered);
@@ -246,7 +269,7 @@ function getMapBasis(
       ...rawPoints.flatMap((point) => [Math.abs(point.x), Math.abs(point.y)]),
     ) * 1.08;
 
-  mapBasisCache = {
+  const basis = {
     mean,
     pc1,
     pc2,
@@ -257,14 +280,16 @@ function getMapBasis(
       y: clamp(point.y / scale, -1.2, 1.2),
     })),
   };
-  return mapBasisCache;
+  mapBasisCache.set(cacheKey, basis);
+  return basis;
 }
 
 function buildEmbeddingMap(
   userVec: number[],
-  anchors: { sense: Sense; index: number; text: string; vec: number[] }[],
+  anchors: AnchorEmbedding[],
+  cacheKey: string,
 ) {
-  const basis = getMapBasis(anchors);
+  const basis = getMapBasis(anchors, cacheKey);
   const centeredInput = userVec.map((value, index) => value - basis.mean[index]);
   const inputPoint = {
     id: "input",
@@ -487,7 +512,9 @@ function blendSenseAnchor(
 
 export async function synesthesize(
   input: string | EmbedInput,
+  options: { provider?: EmbeddingProvider } = {},
 ): Promise<SynesthesiaResult> {
+  const config = getEmbeddingConfig(options.provider);
   const userInput =
     typeof input === "string" ? { type: "text" as const, text: input.trim() } : input;
 
@@ -495,8 +522,8 @@ export async function synesthesize(
     throw new Error("Empty input.");
   }
 
-  const [userVec] = await embedInputs([userInput]);
-  const anchors = await getAnchorEmbeddings();
+  const [userVec] = await embedInputs([userInput], { provider: config.provider });
+  const anchors = await getAnchorEmbeddings(config.provider);
 
   // Group anchors by sense, compute similarity per anchor.
   const bySense: Record<Sense, { index: number; text: string; sim: number }[]> = {
@@ -588,10 +615,12 @@ export async function synesthesize(
   return {
     input: inputLabel,
     inputType: userInput.type,
+    provider: config.provider,
+    model: config.model,
     signature,
     profile,
     vector,
-    map: buildEmbeddingMap(userVec, anchors),
+    map: buildEmbeddingMap(userVec, anchors, config.cacheKey),
     hits,
   };
 }

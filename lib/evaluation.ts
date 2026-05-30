@@ -1,4 +1,9 @@
-import { EmbedInput, embedInputs } from "./ark";
+import {
+  EmbedInput,
+  EmbeddingProvider,
+  embedInputs,
+  getEmbeddingConfig,
+} from "./ark";
 import { allAnchors, Sense } from "./anchors";
 import { cosine, getAnchorEmbeddings } from "./mapping";
 
@@ -79,7 +84,7 @@ const EVAL_CASES: EvaluationCase[] = [
   { id: "mind-unknown", text: "站在岔路口，不知道接下来该往哪里走", sense: "mind", expectedIndex: 4 },
 ];
 
-let evalCache: Promise<EvaluationResult> | null = null;
+const evalCache = new Map<string, Promise<EvaluationResult>>();
 
 function softmax(xs: number[], temperature = 0.05): number[] {
   const scaled = xs.map((x) => x / temperature);
@@ -114,10 +119,13 @@ function emptySenseMetrics() {
   };
 }
 
-async function computeEvaluation(): Promise<EvaluationResult> {
-  const anchors = await getAnchorEmbeddings();
+async function computeEvaluation(
+  provider: EmbeddingProvider,
+): Promise<EvaluationResult> {
+  const anchors = await getAnchorEmbeddings(provider);
   const vectors = await embedInputs(
     EVAL_CASES.map((item): EmbedInput => ({ type: "text", text: item.text })),
+    { provider },
   );
 
   const evaluated = EVAL_CASES.map((item, index) => {
@@ -198,10 +206,15 @@ async function computeEvaluation(): Promise<EvaluationResult> {
   };
 }
 
-export function runEmbeddingEvaluation() {
-  evalCache ??= computeEvaluation().catch((error) => {
-    evalCache = null;
+export function runEmbeddingEvaluation(provider: EmbeddingProvider = "ark") {
+  const config = getEmbeddingConfig(provider);
+  const cached = evalCache.get(config.cacheKey);
+  if (cached) return cached;
+
+  const pending = computeEvaluation(config.provider).catch((error) => {
+    evalCache.delete(config.cacheKey);
     throw error;
   });
-  return evalCache;
+  evalCache.set(config.cacheKey, pending);
+  return pending;
 }
