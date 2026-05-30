@@ -1,6 +1,6 @@
 # 多模态感知-联觉通感 · Synesthesia Engine
 
-把任意一个字、一句诗、一段情绪，投射到「眼耳鼻舌身意」。
+把任意一个字、一句诗、一段情绪，或一张图片，投射到佛家所说的「眼耳鼻舌身意」。
 
 核心思路：**Embedding 就是数学版的联觉。** 任何概念都会被映射到同一个高维语义空间——这正是大脑里"通感"的工程类比。我们为六根各预设若干"原型概念"（颜色/声音/气味/味道/触感/心绪），把用户输入的 embedding 与它们做 cosine similarity，再用最近邻的属性去驱动：
 
@@ -38,14 +38,14 @@ npm run dev
 - `雷雨夜里的孤独` —— 耳跟意会不会同时打中"低沉的钟鸣"和"夜深独坐"
 - `刚收到好消息时心跳的瞬间` —— 身的颤动 + 意的澎湃应当被同时点亮
 
-也可以输入古诗一句、人名、概念、甚至带表情符号的微博，感受 embedding 把它"分拣"到六感的过程。
+也可以输入古诗一句、人名、概念、甚至带表情符号的微博，感受 embedding 把它"分拣"到六感的过程。若把 `ARK_EMBEDDING_MODEL` 切到多模态 embedding 模型，还可以上传图片，让画面被转译成通感体验。
 
 ## 项目结构
 
 ```
 app/
-  page.tsx                  主体验页（输入 + 中央 3D + 六根面板）
-  api/synesthesia/route.ts  POST: 文本 → 六根映射
+  page.tsx                  主体验页（文字/图片输入 + 中央 3D + 六根面板）
+  api/synesthesia/route.ts  POST: 文字/图片 → 六根映射
 components/
   ParticleField.tsx         Three.js 粒子云 + 自定义 GLSL
   SenseCard.tsx             单一感官的玻璃质感卡片

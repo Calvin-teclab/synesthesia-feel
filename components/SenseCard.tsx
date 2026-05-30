@@ -7,7 +7,7 @@ export interface SenseCardProps {
   sense: Sense;
   text: string | null;
   similarity: number | null;
-  candidates?: { text: string; similarity: number }[];
+  candidates?: { text: string; similarity: number; weight?: number }[];
   /** A hex/HSL accent color for the card */
   accent?: string;
   /** 0..1 visual position around the mandala */
@@ -16,6 +16,8 @@ export interface SenseCardProps {
   loading?: boolean;
   /** Side hint for the small visual */
   hint?: React.ReactNode;
+  /** Compact control shown in the card header */
+  action?: React.ReactNode;
 }
 
 export default function SenseCard({
@@ -27,6 +29,7 @@ export default function SenseCard({
   index,
   loading,
   hint,
+  action,
 }: SenseCardProps) {
   const label = senseLabels[sense];
 
@@ -53,6 +56,7 @@ export default function SenseCard({
           {label.sk}
         </span>
         <span className="text-xs text-white/45 ml-auto">{label.gloss}</span>
+        {action}
       </div>
 
       <div className="mt-3 min-h-[3.4rem]">
@@ -100,6 +104,9 @@ export default function SenseCard({
                 · {c.text}
                 <span className="ml-1 text-white/25">
                   {(c.similarity * 100).toFixed(0)}
+                  {typeof c.weight === "number"
+                    ? ` / ${(c.weight * 100).toFixed(0)}%`
+                    : ""}
                 </span>
               </li>
             ))}

@@ -13,9 +13,13 @@ import {
   MindAnchor,
   NoseAnchor,
   Sense,
+  senseLabels,
   TongueAnchor,
 } from "@/lib/anchors";
 import { playEar } from "@/lib/audio";
+
+type InputMode = "text" | "image";
+type WorkbenchTab = "map" | "eval" | "blend";
 
 interface SenseHit<T> {
   sense: Sense;
@@ -23,13 +27,39 @@ interface SenseHit<T> {
   text: string;
   similarity: number;
   weight: number;
+  blend: T;
   anchor: T;
-  candidates: { text: string; similarity: number }[];
+  candidates: { text: string; similarity: number; weight: number }[];
 }
 
 interface ApiResult {
   input: string;
+  inputType: InputMode;
   signature: number[];
+  profile: number[];
+  vector: {
+    dimensions: number;
+    shownDimensions: number;
+    l2Norm: number;
+    meanAbs: number;
+    min: number;
+    max: number;
+    sample: { index: number; value: number; normalized: number }[];
+    strongest: { index: number; value: number; normalized: number }[];
+  };
+  map: {
+    method: "anchor-pca";
+    points: {
+      id: string;
+      type: "anchor" | "input";
+      sense?: Sense;
+      label: string;
+      x: number;
+      y: number;
+      similarity?: number;
+      rank?: number;
+    }[];
+  };
   hits: {
     eye: SenseHit<EyeAnchor>;
     ear: SenseHit<EarAnchor>;
@@ -38,6 +68,38 @@ interface ApiResult {
     body: SenseHit<BodyAnchor>;
     mind: SenseHit<MindAnchor>;
   };
+}
+
+interface EvaluationResult {
+  generatedAt: string;
+  sampleCount: number;
+  metrics: {
+    recallAt1: number;
+    recallAt3: number;
+    mrr: number;
+    avgTop1Margin: number;
+    avgSoftmaxEntropy: number;
+    anchorDistributionEntropy: number;
+  };
+  bySense: Record<
+    Sense,
+    {
+      count: number;
+      recallAt1: number;
+      recallAt3: number;
+      avgRank: number;
+    }
+  >;
+  cases: {
+    id: string;
+    text: string;
+    sense: Sense;
+    expected: string;
+    rank: number;
+    margin: number;
+    entropy: number;
+    top3: { text: string; similarity: number }[];
+  }[];
 }
 
 const PRESETS = [
@@ -55,25 +117,34 @@ function hslCss(h: number, s: number, l: number, a = 1) {
 
 export default function Page() {
   const [text, setText] = useState("");
+  const [mode, setMode] = useState<InputMode>("text");
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [imageName, setImageName] = useState<string | null>(null);
   const [result, setResult] = useState<ApiResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>("map");
+  const [evalResult, setEvalResult] = useState<EvaluationResult | null>(null);
+  const [evalLoading, setEvalLoading] = useState(false);
+  const [evalError, setEvalError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const particleParams: ParticleParams | null = useMemo(() => {
     if (!result) return null;
     const { eye, mind, body, nose } = result.hits;
     return {
-      hue: eye.anchor.hue,
-      sat: eye.anchor.sat,
-      light: eye.anchor.light,
-      form: eye.anchor.form,
-      turbulence: mind.anchor.turbulence,
-      expansion: mind.anchor.scale,
-      gravity: body.anchor.gravity,
-      tremor: Math.min(2, body.anchor.tremor * 0.2),
-      density: nose.anchor.density,
+      hue: eye.blend.hue,
+      sat: eye.blend.sat,
+      light: eye.blend.light,
+      form: eye.blend.form,
+      turbulence: mind.blend.turbulence,
+      expansion: mind.blend.scale,
+      gravity: body.blend.gravity,
+      tremor: Math.min(2, body.blend.tremor * 0.2),
+      density: nose.blend.density,
       signature: result.signature,
+      profile: result.profile,
     };
   }, [result]);
 
@@ -88,7 +159,7 @@ export default function Page() {
         mind: "rgba(200,180,255,0.55)",
       };
     }
-    const eye = result.hits.eye.anchor;
+    const eye = result.hits.eye.blend;
     return {
       eye: hslCss(eye.hue, eye.sat, eye.light, 0.7),
       ear: hslCss(eye.hue + 60, eye.sat, eye.light + 8, 0.55),
@@ -99,30 +170,66 @@ export default function Page() {
     };
   }, [result]);
 
+  const playCurrentEar = useCallback(() => {
+    if (!result?.hits.ear.blend) return;
+    playEar(result.hits.ear.blend);
+  }, [result]);
+
+  const runEvaluation = useCallback(async () => {
+    if (evalLoading) return;
+    setEvalLoading(true);
+    setEvalError(null);
+    try {
+      const res = await fetch("/api/embedding-eval", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Evaluation failed");
+      setEvalResult(json);
+    } catch (e: any) {
+      setEvalError(e?.message || "评测运行失败");
+    } finally {
+      setEvalLoading(false);
+    }
+  }, [evalLoading]);
+
   const submit = useCallback(
-    async (raw: string) => {
-      const t = raw.trim();
-      if (!t || loading) return;
+    async (raw?: string, nextMode = mode) => {
+      const t = (raw ?? text).trim();
+      if (loading) return;
+      if (nextMode === "text" && !t) return;
+      if (nextMode === "image" && !imageDataUrl) {
+        setError("请先上传一张图片");
+        return;
+      }
       setLoading(true);
       setError(null);
       try {
         const res = await fetch("/api/synesthesia", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: t }),
+          body: JSON.stringify(
+            nextMode === "image"
+              ? { mode: "image", imageDataUrl }
+              : { mode: "text", text: t },
+          ),
         });
         const json = await res.json();
         if (!res.ok) throw new Error(json.error || "Request failed");
         setResult(json);
+        setWorkbenchTab("map");
+        if (nextMode === "image") {
+          setImageDataUrl(null);
+          setImageName(null);
+          if (fileRef.current) fileRef.current.value = "";
+        }
         // Play the ear-anchor a beat after the orb starts to shift
-        setTimeout(() => playEar(json.hits.ear.anchor), 250);
+        setTimeout(() => playEar(json.hits.ear.blend), 250);
       } catch (e: any) {
         setError(e?.message || "出错了, 请稍后再试");
       } finally {
         setLoading(false);
       }
     },
-    [loading],
+    [imageDataUrl, loading, mode, text],
   );
 
   const onSubmit = (e: React.FormEvent) => {
@@ -130,20 +237,42 @@ export default function Page() {
     submit(text);
   };
 
+  const handleImage = (file: File | undefined) => {
+    if (!file) return;
+    if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
+      setError("请上传 PNG、JPG 或 WebP 图片");
+      return;
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      setError("图片太大了, 请控制在 4MB 以内");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+      setImageDataUrl(reader.result);
+      setImageName(file.name);
+      setError(null);
+    };
+    reader.onerror = () => setError("图片读取失败, 请换一张试试");
+    reader.readAsDataURL(file);
+  };
+
   const earHint = result && (
-    <EarBars anchor={result.hits.ear.anchor} accent={accents.ear} />
+    <EarBars anchor={result.hits.ear.blend} accent={accents.ear} />
   );
   const noseHint = result && (
-    <NoseHint anchor={result.hits.nose.anchor} accent={accents.nose} />
+    <NoseHint anchor={result.hits.nose.blend} accent={accents.nose} />
   );
   const tongueHint = result && (
-    <TongueHint anchor={result.hits.tongue.anchor} accent={accents.tongue} />
+    <TongueHint anchor={result.hits.tongue.blend} accent={accents.tongue} />
   );
   const bodyHint = result && (
-    <BodyHint anchor={result.hits.body.anchor} accent={accents.body} />
+    <BodyHint anchor={result.hits.body.blend} accent={accents.body} />
   );
   const mindHint = result && (
-    <MindHint anchor={result.hits.mind.anchor} accent={accents.mind} />
+    <MindHint anchor={result.hits.mind.blend} accent={accents.mind} />
   );
 
   return (
@@ -166,13 +295,27 @@ export default function Page() {
         </div>
       </div>
 
+      <div className="pointer-events-none absolute left-1/2 top-[58%] z-10 w-[min(520px,58vw)] -translate-x-1/2 -translate-y-1/2">
+        <EmbeddingWorkbench
+          result={result}
+          loading={loading}
+          accent={accents.mind}
+          activeTab={workbenchTab}
+          onTabChange={setWorkbenchTab}
+          evalResult={evalResult}
+          evalLoading={evalLoading}
+          evalError={evalError}
+          onRunEval={runEvaluation}
+        />
+      </div>
+
       {/* Title */}
       <header className="absolute top-6 left-0 right-0 text-center pointer-events-none z-10">
         <h1 className="font-zen text-2xl sm:text-3xl tracking-[0.45em] text-white/85">
-          六　根
+          联觉通感
         </h1>
         <p className="mt-1 text-[11px] sm:text-xs text-white/45 tracking-[0.3em]">
-          ŚAḌ INDRIYĀṆI · A SYNESTHESIA ENGINE
+          SYNESTHESIA ENGINE
         </p>
         <p className="mt-3 text-[11px] sm:text-xs text-white/40 max-w-[680px] mx-auto px-6 leading-relaxed">
           一句话, 一个字, 都会被 embedding 投射到同一个高维空间——
@@ -197,14 +340,14 @@ export default function Page() {
                   className="w-4 h-4 rounded-full border border-white/20"
                   style={{
                     background: hslCss(
-                      result.hits.eye.anchor.hue,
-                      result.hits.eye.anchor.sat,
-                      result.hits.eye.anchor.light,
+                      result.hits.eye.blend.hue,
+                      result.hits.eye.blend.sat,
+                      result.hits.eye.blend.light,
                     ),
                   }}
                 />
                 <span className="text-[10px] text-white/40 uppercase tracking-[0.18em]">
-                  {result.hits.eye.anchor.form}
+                  {result.hits.eye.blend.form}
                 </span>
               </div>
             )
@@ -219,6 +362,19 @@ export default function Page() {
           similarity={result?.hits.ear.similarity ?? null}
           candidates={result?.hits.ear.candidates}
           hint={earHint}
+          action={
+            result && (
+              <button
+                type="button"
+                onClick={playCurrentEar}
+                className="grid h-6 w-6 place-items-center rounded-full border border-white/10 bg-white/[0.04] text-[10px] text-white/70 transition hover:border-white/25 hover:bg-white/[0.08] hover:text-white"
+                aria-label="播放耳根声音"
+                title="播放耳根声音"
+              >
+                ▶
+              </button>
+            )
+          }
         />
         <SenseCard
           sense="nose"
@@ -281,21 +437,78 @@ export default function Page() {
           )}
         </AnimatePresence>
 
+        <div className="flex rounded-full border border-white/10 bg-black/25 p-1 backdrop-blur-md">
+          {(["text", "image"] as const).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => {
+                setMode(item);
+                setError(null);
+              }}
+              className={`rounded-full px-4 py-1.5 text-[11px] tracking-[0.18em] transition ${
+                mode === item
+                  ? "bg-white/[0.12] text-white shadow-[0_0_18px_rgba(255,255,255,0.08)]"
+                  : "text-white/40 hover:text-white/70"
+              }`}
+            >
+              {item === "text" ? "文字" : "图片"}
+            </button>
+          ))}
+        </div>
+
         <form
           onSubmit={onSubmit}
           className="flex items-center gap-2 w-full max-w-[560px]"
         >
+          {mode === "text" ? (
+            <input
+              ref={inputRef}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="输入一个字, 一句诗, 一段情绪……"
+              maxLength={500}
+              className="zen-input flex-1 rounded-full px-5 py-3 text-sm"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              className="zen-input flex min-w-0 flex-1 items-center gap-3 rounded-full px-4 py-2 text-left text-sm transition hover:border-white/25"
+            >
+              <span className="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full border border-white/10 bg-white/[0.04] text-white/50">
+                {imageDataUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={imageDataUrl}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  "＋"
+                )}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-white/65">
+                {imageName ??
+                  (result?.inputType === "image"
+                    ? "再上传一张图片，生成新的高维向量"
+                    : "上传一张图片，让它转成通感体验")}
+              </span>
+            </button>
+          )}
           <input
-            ref={inputRef}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="输入一个字, 一句诗, 一段情绪……"
-            maxLength={500}
-            className="zen-input flex-1 rounded-full px-5 py-3 text-sm"
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            onChange={(e) => handleImage(e.target.files?.[0])}
           />
           <button
             type="submit"
-            disabled={loading || !text.trim()}
+            disabled={
+              loading ||
+              (mode === "text" ? !text.trim() : imageDataUrl === null)
+            }
             className="rounded-full px-5 py-3 text-sm text-white/90 transition-all disabled:opacity-40"
             style={{
               background: result
@@ -316,8 +529,9 @@ export default function Page() {
               key={p}
               type="button"
               onClick={() => {
+                setMode("text");
                 setText(p);
-                submit(p);
+                submit(p, "text");
               }}
               disabled={loading}
               className="text-[11px] px-3 py-1 rounded-full border border-white/10 text-white/55 hover:text-white hover:border-white/30 transition-colors disabled:opacity-40"
@@ -329,6 +543,433 @@ export default function Page() {
       </div>
     </main>
   );
+}
+
+/* ---------- embedding interview workbench ---------- */
+
+const SENSE_ORDER: Sense[] = ["eye", "ear", "nose", "tongue", "body", "mind"];
+
+const WORKBENCH_TABS: { id: WorkbenchTab; label: string }[] = [
+  { id: "map", label: "MAP" },
+  { id: "eval", label: "EVAL" },
+  { id: "blend", label: "TOP-K" },
+];
+
+const SENSE_COLORS: Record<Sense, string> = {
+  eye: "rgba(255, 151, 109, 0.92)",
+  ear: "rgba(123, 205, 255, 0.92)",
+  nose: "rgba(136, 235, 174, 0.92)",
+  tongue: "rgba(255, 139, 193, 0.92)",
+  body: "rgba(255, 211, 127, 0.92)",
+  mind: "rgba(190, 157, 255, 0.92)",
+};
+
+function pct(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function trimText(value: string, max = 12) {
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+function EmbeddingWorkbench({
+  result,
+  loading,
+  accent,
+  activeTab,
+  onTabChange,
+  evalResult,
+  evalLoading,
+  evalError,
+  onRunEval,
+}: {
+  result: ApiResult | null;
+  loading: boolean;
+  accent: string;
+  activeTab: WorkbenchTab;
+  onTabChange: (tab: WorkbenchTab) => void;
+  evalResult: EvaluationResult | null;
+  evalLoading: boolean;
+  evalError: string | null;
+  onRunEval: () => void;
+}) {
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: result || loading ? 1 : 0.58, y: 0 }}
+      transition={{ duration: 0.5, ease: "easeOut" }}
+      className="pointer-events-auto w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-white/70 shadow-[0_18px_60px_rgba(0,0,0,0.32)] backdrop-blur-md"
+      style={{ boxShadow: result ? `0 0 34px -16px ${accent}` : undefined }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.26em] text-white/38">
+            Embedding Lab
+          </div>
+          <div className="mt-1 font-zen text-base text-white/85">
+            {activeTab === "map"
+              ? "Anchor 向量地图"
+              : activeTab === "eval"
+                ? "检索评测"
+                : "Top-1 / Top-k 对照"}
+          </div>
+        </div>
+        <div className="flex rounded-full border border-white/10 bg-white/[0.035] p-1">
+          {WORKBENCH_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => onTabChange(tab.id)}
+              className={`rounded-full px-2.5 py-1 text-[9px] tracking-[0.18em] transition ${
+                activeTab === tab.id
+                  ? "bg-white/[0.12] text-white"
+                  : "text-white/38 hover:text-white/70"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeTab === "map" && (
+        <EmbeddingMapPanel result={result} loading={loading} accent={accent} />
+      )}
+      {activeTab === "eval" && (
+        <EvaluationPanel
+          evalResult={evalResult}
+          evalLoading={evalLoading}
+          evalError={evalError}
+          onRunEval={onRunEval}
+        />
+      )}
+      {activeTab === "blend" && <BlendPanel result={result} loading={loading} />}
+    </motion.section>
+  );
+}
+
+function EmbeddingMapPanel({
+  result,
+  loading,
+  accent,
+}: {
+  result: ApiResult | null;
+  loading: boolean;
+  accent: string;
+}) {
+  const samples = result?.vector.sample.slice(0, 40) ?? [];
+  const strongest = result?.vector.strongest.slice(0, 3) ?? [];
+
+  return (
+    <div className="mt-3">
+      <div className="relative h-40 overflow-hidden rounded-lg border border-white/8 bg-white/[0.035]">
+        <div className="absolute left-1/2 top-3 bottom-3 w-px bg-white/8" />
+        <div className="absolute left-3 right-3 top-1/2 h-px bg-white/8" />
+        {result?.map.points.map((point) => {
+          const isInput = point.type === "input";
+          const isNear = typeof point.rank === "number" && point.rank <= 6;
+          const color =
+            point.type === "anchor" && point.sense
+              ? SENSE_COLORS[point.sense]
+              : accent;
+          const size = isInput ? 16 : isNear ? 9 : 5;
+
+          return (
+            <span
+              key={point.id}
+              className="absolute"
+              style={{
+                left: `${50 + point.x * 40}%`,
+                top: `${50 - point.y * 40}%`,
+                transform: "translate(-50%, -50%)",
+              }}
+            >
+              <span
+                className={`block rounded-full ${
+                  isInput ? "border border-white/80" : "border border-white/15"
+                }`}
+                title={`${point.label}${
+                  point.similarity ? ` · ${point.similarity.toFixed(4)}` : ""
+                }`}
+                style={{
+                  width: size,
+                  height: size,
+                  background: color,
+                  opacity: isInput ? 1 : isNear ? 0.95 : 0.38,
+                  boxShadow: isInput || isNear ? `0 0 16px ${color}` : undefined,
+                }}
+              />
+              {(isInput || (point.rank && point.rank <= 3)) && (
+                <span
+                  className="absolute left-3 top-[-6px] whitespace-nowrap rounded-full border border-white/10 bg-black/55 px-1.5 py-0.5 text-[9px] text-white/66 backdrop-blur"
+                  style={{ color: isInput ? "rgba(255,255,255,0.9)" : color }}
+                >
+                  {isInput ? "INPUT" : `#${point.rank} ${trimText(point.label, 8)}`}
+                </span>
+              )}
+            </span>
+          );
+        })}
+        {!result && (
+          <div className="flex h-full items-center justify-center text-[11px] tracking-[0.2em] text-white/24">
+            {loading ? "正在投影向量空间" : "等待一次起念"}
+          </div>
+        )}
+      </div>
+
+      <div className="relative mt-3 h-12 overflow-hidden rounded-lg border border-white/8 bg-white/[0.035]">
+        <div className="absolute left-0 right-0 top-1/2 h-px bg-white/12" />
+        {samples.length > 0 ? (
+          <div className="grid h-full grid-cols-[repeat(40,minmax(0,1fr))] items-center gap-[2px] px-2">
+            {samples.map((item) => {
+              const height = 4 + Math.abs(item.normalized) * 20;
+              const positive = item.value >= 0;
+              return (
+                <span
+                  key={item.index}
+                  title={`d${item.index}: ${item.value.toFixed(6)}`}
+                  className="relative block h-full"
+                >
+                  <span
+                    className="absolute left-0 right-0 mx-auto block w-full rounded-full"
+                    style={{
+                      height,
+                      bottom: positive ? "50%" : undefined,
+                      top: positive ? undefined : "50%",
+                      background: positive
+                        ? accent
+                        : "rgba(118, 214, 255, 0.78)",
+                      boxShadow: `0 0 10px ${
+                        positive ? accent : "rgba(118,214,255,0.55)"
+                      }`,
+                    }}
+                  />
+                </span>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="flex h-full items-center justify-center text-[11px] tracking-[0.2em] text-white/24">
+            {loading ? "正在等待真实向量返回" : "未生成前不显示模拟数据"}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 text-[10px] text-white/38">
+        <span className="shrink-0">
+          {result
+            ? `${result.vector.dimensions}D · 均幅 ${result.vector.meanAbs.toFixed(4)}`
+            : "Anchor PCA + 当前输入投影"}
+        </span>
+        {strongest.length > 0 && (
+          <span className="min-w-0 truncate text-right tabular-nums">
+            strongest{" "}
+            {strongest
+              .map((item) => `d${item.index} ${item.value.toFixed(4)}`)
+              .join(" · ")}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EvaluationPanel({
+  evalResult,
+  evalLoading,
+  evalError,
+  onRunEval,
+}: {
+  evalResult: EvaluationResult | null;
+  evalLoading: boolean;
+  evalError: string | null;
+  onRunEval: () => void;
+}) {
+  const hardCases =
+    evalResult?.cases
+      .slice()
+      .sort((a, b) => b.rank - a.rank || a.margin - b.margin)
+      .slice(0, 6) ?? [];
+
+  return (
+    <div className="mt-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[10px] uppercase tracking-[0.2em] text-white/38">
+          {evalResult ? `${evalResult.sampleCount} samples` : "on-demand batch"}
+        </div>
+        <button
+          type="button"
+          onClick={onRunEval}
+          disabled={evalLoading}
+          className="rounded-full border border-white/10 bg-white/[0.055] px-3 py-1.5 text-[10px] tracking-[0.14em] text-white/68 transition hover:border-white/25 hover:text-white disabled:opacity-40"
+        >
+          {evalLoading ? "RUNNING" : evalResult ? "RERUN" : "RUN EVAL"}
+        </button>
+      </div>
+
+      {evalError && <div className="mt-2 text-xs text-rose-300">{evalError}</div>}
+
+      {evalResult ? (
+        <>
+          <div className="mt-3 grid grid-cols-5 gap-2">
+            <MetricPill label="R@1" value={pct(evalResult.metrics.recallAt1)} />
+            <MetricPill label="R@3" value={pct(evalResult.metrics.recallAt3)} />
+            <MetricPill label="MRR" value={evalResult.metrics.mrr.toFixed(2)} />
+            <MetricPill
+              label="Margin"
+              value={evalResult.metrics.avgTop1Margin.toFixed(3)}
+            />
+            <MetricPill
+              label="Entropy"
+              value={evalResult.metrics.avgSoftmaxEntropy.toFixed(2)}
+            />
+          </div>
+
+          <div className="mt-3 grid grid-cols-6 gap-1.5">
+            {SENSE_ORDER.map((sense) => (
+              <div
+                key={sense}
+                className="rounded-md border border-white/8 bg-white/[0.03] px-2 py-1.5 text-center"
+              >
+                <div
+                  className="font-zen text-sm"
+                  style={{ color: SENSE_COLORS[sense] }}
+                >
+                  {senseLabels[sense].zh}
+                </div>
+                <div className="mt-0.5 text-[9px] tabular-nums text-white/38">
+                  {pct(evalResult.bySense[sense].recallAt3)}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-3 max-h-24 space-y-1 overflow-y-auto pr-1">
+            {hardCases.map((item) => (
+              <div
+                key={item.id}
+                className="grid grid-cols-[22px_minmax(0,1fr)_42px] items-center gap-2 text-[10px] text-white/46"
+              >
+                <span
+                  className="font-zen text-sm"
+                  style={{ color: SENSE_COLORS[item.sense] }}
+                >
+                  {senseLabels[item.sense].zh}
+                </span>
+                <span className="truncate" title={`${item.text} → ${item.expected}`}>
+                  {trimText(item.text, 28)}
+                </span>
+                <span className="text-right tabular-nums text-white/38">
+                  rank {item.rank}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="mt-3 flex h-36 items-center justify-center rounded-lg border border-white/8 bg-white/[0.035] text-[11px] tracking-[0.18em] text-white/26">
+          点击运行 30 条语义样本评测
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-white/8 bg-white/[0.035] px-2 py-2 text-center">
+      <div className="text-[9px] uppercase tracking-[0.16em] text-white/32">
+        {label}
+      </div>
+      <div className="mt-1 text-sm tabular-nums text-white/78">{value}</div>
+    </div>
+  );
+}
+
+function BlendPanel({
+  result,
+  loading,
+}: {
+  result: ApiResult | null;
+  loading: boolean;
+}) {
+  if (!result) {
+    return (
+      <div className="mt-3 flex h-48 items-center justify-center rounded-lg border border-white/8 bg-white/[0.035] text-[11px] tracking-[0.18em] text-white/26">
+        {loading ? "正在生成候选权重" : "等待一次起念"}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
+      {SENSE_ORDER.map((sense) => (
+        <BlendRow key={sense} sense={sense} hit={result.hits[sense]} />
+      ))}
+    </div>
+  );
+}
+
+function BlendRow({ sense, hit }: { sense: Sense; hit: ApiResult["hits"][Sense] }) {
+  const metric = blendMetric(sense, hit);
+  const weights = hit.candidates
+    .slice(0, 3)
+    .map((candidate) => pct(candidate.weight))
+    .join(" / ");
+
+  return (
+    <div className="rounded-lg border border-white/8 bg-white/[0.032] px-3 py-2">
+      <div className="grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2">
+        <span
+          className="font-zen text-lg leading-none"
+          style={{ color: SENSE_COLORS[sense] }}
+        >
+          {senseLabels[sense].zh}
+        </span>
+        <div className="min-w-0">
+          <div className="truncate text-xs text-white/74">
+            top-1 {trimText(hit.text, 18)}
+          </div>
+          <div className="mt-0.5 truncate text-[10px] text-white/34">
+            top-k weights {weights}
+          </div>
+        </div>
+        <div className="text-right text-[10px] tabular-nums text-white/46">
+          {metric}
+        </div>
+      </div>
+      <div className="mt-2 h-[3px] overflow-hidden rounded-full bg-white/8">
+        <div
+          className="h-full rounded-full"
+          style={{
+            width: `${Math.max(4, Math.min(100, hit.weight * 100))}%`,
+            background: SENSE_COLORS[sense],
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function blendMetric(sense: Sense, hit: ApiResult["hits"][Sense]) {
+  const anchor = hit.anchor as any;
+  const blend = hit.blend as any;
+  if (sense === "eye") {
+    return `H ${anchor.hue.toFixed(0)}→${blend.hue.toFixed(0)}`;
+  }
+  if (sense === "ear") {
+    return `${anchor.freq.toFixed(0)}→${blend.freq.toFixed(0)}Hz`;
+  }
+  if (sense === "nose") {
+    return `D ${anchor.density.toFixed(2)}→${blend.density.toFixed(2)}`;
+  }
+  if (sense === "tongue") {
+    return `T ${anchor.temperature.toFixed(2)}→${blend.temperature.toFixed(2)}`;
+  }
+  if (sense === "body") {
+    return `G ${anchor.gravity.toFixed(2)}→${blend.gravity.toFixed(2)}`;
+  }
+  return `Q ${anchor.turbulence.toFixed(2)}→${blend.turbulence.toFixed(2)}`;
 }
 
 /* ---------- small per-sense visual hints ---------- */

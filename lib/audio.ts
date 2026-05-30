@@ -1,6 +1,7 @@
 import type { EarAnchor } from "./anchors";
 
 let ctx: AudioContext | null = null;
+let activeCleanup: (() => void) | null = null;
 
 export function getAudioContext(): AudioContext {
   if (typeof window === "undefined") {
@@ -18,9 +19,11 @@ export function getAudioContext(): AudioContext {
 }
 
 /** Play an "ear" anchor as a brief, layered tone. */
-export function playEar(anchor: EarAnchor, durationSec = 3.2) {
+export function playEar(anchor: EarAnchor) {
   const ac = getAudioContext();
   const now = ac.currentTime;
+
+  stopEar();
 
   const master = ac.createGain();
   master.gain.value = 0;
@@ -40,6 +43,9 @@ export function playEar(anchor: EarAnchor, durationSec = 3.2) {
   filter.Q.value = 1.4;
   filter.connect(master);
 
+  const nodes: AudioNode[] = [master, filter];
+  const oscillators: OscillatorNode[] = [];
+
   const makeOsc = (freq: number, gain: number, detune = 0) => {
     const o = ac.createOscillator();
     o.type = anchor.waveform;
@@ -51,6 +57,8 @@ export function playEar(anchor: EarAnchor, durationSec = 3.2) {
     g.connect(filter);
     o.start(now);
     o.stop(now + anchor.attack + anchor.release + 0.5);
+    nodes.push(g);
+    oscillators.push(o);
     return { o, g };
   };
 
@@ -70,11 +78,38 @@ export function playEar(anchor: EarAnchor, durationSec = 3.2) {
   shimmerGain.connect(filter.frequency);
   shimmer.start(now);
   shimmer.stop(now + anchor.attack + anchor.release + 0.5);
+  nodes.push(shimmerGain);
+  oscillators.push(shimmer);
+
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    oscillators.forEach((osc) => {
+      try {
+        osc.stop();
+      } catch {}
+      try {
+        osc.disconnect();
+      } catch {}
+    });
+    nodes.forEach((node) => {
+      try {
+        node.disconnect();
+      } catch {}
+    });
+    if (activeCleanup === cleanup) activeCleanup = null;
+  };
+
+  activeCleanup = cleanup;
 
   // Final fade-out safety
   setTimeout(() => {
-    try {
-      master.disconnect();
-    } catch {}
+    cleanup();
   }, (anchor.attack + anchor.release + 1) * 1000);
+}
+
+export function stopEar() {
+  activeCleanup?.();
+  activeCleanup = null;
 }

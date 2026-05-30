@@ -13,8 +13,10 @@ export interface ParticleParams {
   gravity: number; // 0-1
   tremor: number; // Hz-ish
   density: number; // 0-1, nose hint
-  /** signature scalars in [-1, 1]; we use the first four for shader steering */
+  /** signature scalars in [-1, 1]; folded into shader steering projections */
   signature: number[];
+  /** folded full-embedding projection in [-1, 1], one source for particle geometry */
+  profile: number[];
 }
 
 const FORM_INDEX: Record<ParticleParams["form"], number> = {
@@ -36,6 +38,7 @@ const DEFAULT_PARAMS: ParticleParams = {
   tremor: 0.5,
   density: 0.4,
   signature: [0, 0, 0, 0],
+  profile: [],
 };
 
 const vertexShader = /* glsl */ `
@@ -49,7 +52,11 @@ const vertexShader = /* glsl */ `
   uniform vec4  uSig;
 
   attribute float aSeed;
+  attribute float aEmbed;
+  attribute float aEmbedSide;
+  attribute float aEmbedSize;
   varying float vIntensity;
+  varying float vEmbed;
 
   float hash(vec3 p) {
     p = fract(p * 0.3183099 + 0.1);
@@ -84,6 +91,12 @@ const vertexShader = /* glsl */ `
     float nz = noise3(pos * 1.6 + vec3(0.0, t * 0.18, 0.0));
     float nz2 = noise3(pos * 3.2 - vec3(t * 0.1));
     vec3 dir = normalize(pos + vec3(0.0001));
+    vec3 tangentRaw = cross(dir, vec3(0.0, 1.0, 0.0));
+    if (length(tangentRaw) < 0.1) {
+      tangentRaw = cross(dir, vec3(1.0, 0.0, 0.0));
+    }
+    vec3 tangent = normalize(tangentRaw);
+    vec3 bitangent = normalize(cross(dir, tangent));
 
     vec3 disp = vec3(0.0);
     if (uForm == 0) {
@@ -124,6 +137,10 @@ const vertexShader = /* glsl */ `
     disp += vec3(uSig.x, uSig.y, uSig.z) * 0.18;
     disp += dir * uSig.w * 0.2;
 
+    // Full embedding profile: each particle carries a folded projection slot.
+    disp += dir * aEmbed * (0.24 + uDensity * 0.2);
+    disp += (tangent * sin(aSeed * 6.2831) + bitangent * cos(aSeed * 6.2831)) * aEmbedSide * 0.12;
+
     disp += dir * uDensity * 0.25 * nz2;
 
     vec3 finalPos = pos + disp;
@@ -131,9 +148,10 @@ const vertexShader = /* glsl */ `
     gl_Position = projectionMatrix * mv;
 
     float dist = length(mv.xyz);
-    gl_PointSize = 9.0 * (1.0 / max(dist, 0.8));
+    gl_PointSize = 9.0 * (1.0 / max(dist, 0.8)) * (0.72 + aEmbedSize * 0.72 + abs(aEmbed) * 0.42);
 
-    vIntensity = clamp(0.45 + nz * 0.7 + uTurbulence * 0.4 + abs(uSig.x) * 0.6, 0.0, 1.4);
+    vEmbed = aEmbed;
+    vIntensity = clamp(0.42 + nz * 0.62 + uTurbulence * 0.4 + abs(uSig.x) * 0.45 + abs(aEmbed) * 0.8, 0.0, 1.7);
   }
 `;
 
@@ -142,6 +160,7 @@ const fragmentShader = /* glsl */ `
   uniform vec3 uColor;
   uniform vec3 uColorB;
   varying float vIntensity;
+  varying float vEmbed;
 
   void main() {
     vec2 uv = gl_PointCoord - vec2(0.5);
@@ -149,6 +168,8 @@ const fragmentShader = /* glsl */ `
     if (d > 0.5) discard;
     float alpha = smoothstep(0.5, 0.0, d);
     vec3 col = mix(uColor, uColorB, smoothstep(0.0, 0.5, d));
+    col = mix(col, uColorB, max(0.0, -vEmbed) * 0.38);
+    col += uColor * max(0.0, vEmbed) * 0.22;
     col *= vIntensity * 1.2;
     gl_FragColor = vec4(col, alpha * 0.85);
   }
@@ -158,6 +179,34 @@ function hslColor(h: number, s: number, l: number): THREE.Color {
   const c = new THREE.Color();
   c.setHSL((((h % 360) + 360) % 360) / 360, s / 100, l / 100);
   return c;
+}
+
+function foldSignature(signature: number[]): [number, number, number, number] {
+  if (signature.length === 0) return [0, 0, 0, 0];
+  const sums = [0, 0, 0, 0];
+  const weights = [0, 0, 0, 0];
+
+  signature.forEach((value, index) => {
+    const group = index % 4;
+    const weight = 0.65 + ((index * 13) % 17) / 24;
+    sums[group] += value * weight;
+    weights[group] += weight;
+  });
+
+  return sums.map((sum, index) => {
+    const folded = sum / Math.max(1e-6, weights[index]);
+    return Math.max(-1, Math.min(1, folded * 2.4));
+  }) as [number, number, number, number];
+}
+
+function stableSeed(index: number): number {
+  return (Math.sin(index * 12.9898 + 78.233) * 43758.5453) % 1;
+}
+
+function profileValue(profile: number[], index: number, salt: number): number {
+  if (profile.length === 0) return 0;
+  const slot = Math.abs((index * 37 + salt * 53) % profile.length);
+  return profile[slot] ?? 0;
 }
 
 export default function ParticleField({
@@ -198,6 +247,9 @@ export default function ParticleField({
     const COUNT = 7000;
     const positions = new Float32Array(COUNT * 3);
     const seeds = new Float32Array(COUNT);
+    const embed = new Float32Array(COUNT);
+    const embedSide = new Float32Array(COUNT);
+    const embedSize = new Float32Array(COUNT);
     const phi = Math.PI * (Math.sqrt(5) - 1);
     for (let i = 0; i < COUNT; i++) {
       const y = 1 - (i / (COUNT - 1)) * 2;
@@ -206,12 +258,18 @@ export default function ParticleField({
       positions[i * 3] = Math.cos(theta) * radius;
       positions[i * 3 + 1] = y;
       positions[i * 3 + 2] = Math.sin(theta) * radius;
-      seeds[i] = Math.random();
+      seeds[i] = Math.abs(stableSeed(i));
     }
 
     const geom = new THREE.BufferGeometry();
     geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geom.setAttribute("aSeed", new THREE.BufferAttribute(seeds, 1));
+    const embedAttr = new THREE.BufferAttribute(embed, 1);
+    const embedSideAttr = new THREE.BufferAttribute(embedSide, 1);
+    const embedSizeAttr = new THREE.BufferAttribute(embedSize, 1);
+    geom.setAttribute("aEmbed", embedAttr);
+    geom.setAttribute("aEmbedSide", embedSideAttr);
+    geom.setAttribute("aEmbedSize", embedSizeAttr);
 
     const uniforms = {
       uTime: { value: 0 },
@@ -264,6 +322,20 @@ export default function ParticleField({
       cur.tremor = lerp(cur.tremor, target.tremor, k);
       cur.density = lerp(cur.density, target.density, k);
 
+      const profile =
+        target.profile.length > 0 ? target.profile : target.signature;
+      for (let i = 0; i < COUNT; i++) {
+        const primary = profileValue(profile, i, 1);
+        const side = profileValue(profile, i, 2);
+        const size = Math.abs(profileValue(profile, i, 3));
+        embed[i] = lerp(embed[i], primary, 0.045);
+        embedSide[i] = lerp(embedSide[i], side, 0.045);
+        embedSize[i] = lerp(embedSize[i], size, 0.045);
+      }
+      embedAttr.needsUpdate = true;
+      embedSideAttr.needsUpdate = true;
+      embedSizeAttr.needsUpdate = true;
+
       uniforms.uTime.value = t;
       uniforms.uTurbulence.value = cur.turbulence;
       uniforms.uExpansion.value = cur.expansion;
@@ -281,11 +353,11 @@ export default function ParticleField({
       (uniforms.uColor.value as THREE.Color).lerp(tgtA, 0.06);
       (uniforms.uColorB.value as THREE.Color).lerp(tgtB, 0.06);
 
-      const s = target.signature;
-      sigCur.x = lerp(sigCur.x, s[0] || 0, 0.05);
-      sigCur.y = lerp(sigCur.y, s[1] || 0, 0.05);
-      sigCur.z = lerp(sigCur.z, s[2] || 0, 0.05);
-      sigCur.w = lerp(sigCur.w, s[3] || 0, 0.05);
+      const s = foldSignature(target.signature);
+      sigCur.x = lerp(sigCur.x, s[0], 0.05);
+      sigCur.y = lerp(sigCur.y, s[1], 0.05);
+      sigCur.z = lerp(sigCur.z, s[2], 0.05);
+      sigCur.w = lerp(sigCur.w, s[3], 0.05);
       (uniforms.uSig.value as THREE.Vector4).copy(sigCur);
 
       points.rotation.y += 0.0018 + cur.turbulence * 0.004;

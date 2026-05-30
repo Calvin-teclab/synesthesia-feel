@@ -11,6 +11,10 @@ interface TextResponse {
   data: { embedding: number[]; index: number }[];
 }
 
+export type EmbedInput =
+  | { type: "text"; text: string }
+  | { type: "image"; imageDataUrl: string };
+
 // Multimodal endpoint may return data as either an object or a single-element array.
 type MultimodalResponse =
   | { data: { embedding: number[] } }
@@ -51,8 +55,13 @@ async function embedText(
 async function embedMultimodalOne(
   apiKey: string,
   model: string,
-  text: string,
+  input: EmbedInput,
 ): Promise<number[]> {
+  const multimodalInput =
+    input.type === "text"
+      ? [{ type: "text", text: input.text }]
+      : [{ type: "image_url", image_url: { url: input.imageDataUrl } }];
+
   const res = await fetch(MM_ENDPOINT, {
     method: "POST",
     headers: {
@@ -61,7 +70,8 @@ async function embedMultimodalOne(
     },
     body: JSON.stringify({
       model,
-      input: [{ type: "text", text }],
+      input: multimodalInput,
+      encoding_format: "float",
     }),
     cache: "no-store",
   });
@@ -83,13 +93,17 @@ async function embedMultimodalOne(
 async function embedMultimodal(
   apiKey: string,
   model: string,
-  inputs: string[],
+  inputs: EmbedInput[],
 ): Promise<number[][]> {
   // Multimodal API embeds one fused input per call → run them in parallel.
-  return Promise.all(inputs.map((t) => embedMultimodalOne(apiKey, model, t)));
+  return Promise.all(inputs.map((input) => embedMultimodalOne(apiKey, model, input)));
 }
 
 export async function embed(inputs: string[]): Promise<number[][]> {
+  return embedInputs(inputs.map((text) => ({ type: "text", text })));
+}
+
+export async function embedInputs(inputs: EmbedInput[]): Promise<number[][]> {
   const apiKey = process.env.ARK_API_KEY;
   if (!apiKey) {
     throw new Error(
@@ -102,5 +116,22 @@ export async function embed(inputs: string[]): Promise<number[][]> {
   if (isMultimodalModel(model)) {
     return embedMultimodal(apiKey, model, inputs);
   }
-  return embedText(apiKey, model, inputs);
+
+  const imageInput = inputs.find((input) => input.type === "image");
+  if (imageInput) {
+    throw new Error(
+      "图片联觉需要把 ARK_EMBEDDING_MODEL 设置为多模态 embedding 模型，例如 doubao-embedding-vision-251215。",
+    );
+  }
+
+  const textInputs = inputs.filter(
+    (input): input is Extract<EmbedInput, { type: "text" }> =>
+      input.type === "text",
+  );
+
+  return embedText(
+    apiKey,
+    model,
+    textInputs.map((input) => input.text),
+  );
 }

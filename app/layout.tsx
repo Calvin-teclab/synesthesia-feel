@@ -2,9 +2,9 @@ import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "六根 · Synesthesia",
+  title: "联觉通感",
   description:
-    "把任意一个字、一句话，投射到眼耳鼻舌身意。用 embedding 体验佛家说的「六根互用」与脑科学里的联觉。",
+    "把任意一个字、一句话或一张图片，转译成颜色、声音、气味、味道、触感与心绪。",
 };
 
 export default function RootLayout({

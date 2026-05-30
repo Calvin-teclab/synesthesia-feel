@@ -54,6 +54,7 @@ body {
   backdrop-filter: blur(14px);
 }
 
+.zen-input,
 input.zen-input,
 textarea.zen-input {
   background: rgba(0, 0, 0, 0.35);
@@ -64,6 +65,7 @@ textarea.zen-input {
   transition: all 0.25s ease;
 }
 
+.zen-input:focus,
 input.zen-input:focus,
 textarea.zen-input:focus {
   border-color: rgba(255, 220, 180, 0.55);
