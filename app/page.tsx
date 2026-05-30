@@ -428,7 +428,13 @@ export default function Page() {
               >
                 {provider.label}
               </button>
-              <span className="pointer-events-none absolute left-1/2 top-full z-40 mt-3 -translate-x-1/2 whitespace-nowrap rounded-lg border border-white/10 bg-black/72 px-3 py-2 text-[10px] tracking-[0.12em] text-white/72 opacity-0 shadow-[0_16px_44px_rgba(0,0,0,0.38)] backdrop-blur-md transition duration-150 group-hover:translate-y-0 group-hover:opacity-100">
+              <span
+                className={`pointer-events-none absolute top-full z-40 mt-3 whitespace-nowrap rounded-lg border border-white/10 bg-black/72 px-3 py-2 text-[10px] tracking-[0.12em] text-white/72 opacity-0 shadow-[0_16px_44px_rgba(0,0,0,0.38)] backdrop-blur-md transition duration-150 group-hover:translate-y-0 group-hover:opacity-100 ${
+                  provider.id === "gemini"
+                    ? "right-0 translate-x-0"
+                    : "left-1/2 -translate-x-1/2"
+                }`}
+              >
                 <span className="text-white/38">{provider.label}</span>
                 <span className="mx-1.5 text-white/20">/</span>
                 <span>{providerModels[provider.id] ?? "读取模型配置中"}</span>
