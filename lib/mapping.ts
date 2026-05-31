@@ -103,7 +103,7 @@ export interface SynesthesiaResult {
   hits: Record<Sense, SenseHit>;
 }
 
-function softmax(xs: number[], temperature = 0.05): number[] {
+export function softmax(xs: number[], temperature = 0.05): number[] {
   // Sharper temperature => more peaked distribution.
   const scaled = xs.map((x) => x / temperature);
   const m = Math.max(...scaled);

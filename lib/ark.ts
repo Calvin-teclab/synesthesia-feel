@@ -149,13 +149,18 @@ async function embedMultimodalOne(
   return embedding;
 }
 
+// Multimodal API embeds one fused input per call. Anchor warm-up sends ~45
+// inputs at once, so cap concurrency to avoid hammering the endpoint (429s).
+const MULTIMODAL_CONCURRENCY = 6;
+
 async function embedMultimodal(
   apiKey: string,
   model: string,
   inputs: EmbedInput[],
 ): Promise<number[][]> {
-  // Multimodal API embeds one fused input per call → run them in parallel.
-  return Promise.all(inputs.map((input) => embedMultimodalOne(apiKey, model, input)));
+  return runWithConcurrency(inputs, MULTIMODAL_CONCURRENCY, (input) =>
+    embedMultimodalOne(apiKey, model, input),
+  );
 }
 
 function dataUrlToGeminiPart(dataUrl: string) {

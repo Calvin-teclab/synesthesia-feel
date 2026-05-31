@@ -312,6 +312,15 @@ export default function ParticleField({
     const sigCur = new THREE.Vector4(0, 0, 0, 0);
     const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
+    // Per-particle embed targets are deterministic for a given profile, so we
+    // recompute them only when the profile reference changes, then lerp toward
+    // them and stop re-uploading the buffers once they've converged.
+    const targetEmbed = new Float32Array(COUNT);
+    const targetSide = new Float32Array(COUNT);
+    const targetSize = new Float32Array(COUNT);
+    let profileSrc: number[] | null = null;
+    let embedConverged = true;
+
     const animate = () => {
       const t = (performance.now() - start) / 1000;
       const target = paramsRef.current;
@@ -324,17 +333,37 @@ export default function ParticleField({
 
       const profile =
         target.profile.length > 0 ? target.profile : target.signature;
-      for (let i = 0; i < COUNT; i++) {
-        const primary = profileValue(profile, i, 1);
-        const side = profileValue(profile, i, 2);
-        const size = Math.abs(profileValue(profile, i, 3));
-        embed[i] = lerp(embed[i], primary, 0.045);
-        embedSide[i] = lerp(embedSide[i], side, 0.045);
-        embedSize[i] = lerp(embedSize[i], size, 0.045);
+      if (profile !== profileSrc) {
+        profileSrc = profile;
+        for (let i = 0; i < COUNT; i++) {
+          targetEmbed[i] = profileValue(profile, i, 1);
+          targetSide[i] = profileValue(profile, i, 2);
+          targetSize[i] = Math.abs(profileValue(profile, i, 3));
+        }
+        embedConverged = false;
       }
-      embedAttr.needsUpdate = true;
-      embedSideAttr.needsUpdate = true;
-      embedSizeAttr.needsUpdate = true;
+
+      if (!embedConverged) {
+        let maxDelta = 0;
+        for (let i = 0; i < COUNT; i++) {
+          const ne = lerp(embed[i], targetEmbed[i], 0.045);
+          const ns = lerp(embedSide[i], targetSide[i], 0.045);
+          const nz = lerp(embedSize[i], targetSize[i], 0.045);
+          maxDelta = Math.max(
+            maxDelta,
+            Math.abs(ne - embed[i]),
+            Math.abs(ns - embedSide[i]),
+            Math.abs(nz - embedSize[i]),
+          );
+          embed[i] = ne;
+          embedSide[i] = ns;
+          embedSize[i] = nz;
+        }
+        embedAttr.needsUpdate = true;
+        embedSideAttr.needsUpdate = true;
+        embedSizeAttr.needsUpdate = true;
+        if (maxDelta < 1e-4) embedConverged = true;
+      }
 
       uniforms.uTime.value = t;
       uniforms.uTurbulence.value = cur.turbulence;

@@ -5,7 +5,7 @@ import {
   getEmbeddingConfig,
 } from "./ark";
 import { allAnchors, Sense } from "./anchors";
-import { cosine, getAnchorEmbeddings } from "./mapping";
+import { cosine, getAnchorEmbeddings, softmax } from "./mapping";
 
 export interface EvaluationCase {
   id: string;
@@ -85,14 +85,6 @@ const EVAL_CASES: EvaluationCase[] = [
 ];
 
 const evalCache = new Map<string, Promise<EvaluationResult>>();
-
-function softmax(xs: number[], temperature = 0.05): number[] {
-  const scaled = xs.map((x) => x / temperature);
-  const max = Math.max(...scaled);
-  const exps = scaled.map((x) => Math.exp(x - max));
-  const sum = exps.reduce((total, value) => total + value, 0);
-  return exps.map((value) => value / Math.max(1e-9, sum));
-}
 
 function normalizedEntropy(weights: number[]): number {
   const entropy = weights.reduce((total, weight) => {
