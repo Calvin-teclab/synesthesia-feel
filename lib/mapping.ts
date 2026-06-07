@@ -1,6 +1,7 @@
 import {
   embed,
   embedInputs,
+  CalibrationMode,
   EmbedInput,
   EmbeddingProvider,
   getEmbeddingConfig,
@@ -35,14 +36,21 @@ type AnchorEmbedding = { sense: Sense; index: number; text: string; vec: number[
 /** In-process cache for anchor embeddings. Keyed by provider/model vector space. */
 const anchorCache = new Map<string, Promise<AnchorEmbedding[]>>();
 
-export async function getAnchorEmbeddings(provider: EmbeddingProvider = "ark") {
-  const config = getEmbeddingConfig(provider);
+export async function getAnchorEmbeddings(
+  provider: EmbeddingProvider = "ark",
+  calibrationMode: CalibrationMode = "compare",
+) {
+  const config = getEmbeddingConfig(provider, calibrationMode);
   const cached = anchorCache.get(config.cacheKey);
   if (cached) return cached;
   const flat = flatAnchorList();
   const pending = embed(
     flat.map((a) => a.text),
-    { provider: config.provider },
+    {
+      provider: config.provider,
+      calibrationMode: config.calibrationMode,
+      inputRole: "anchor",
+    },
   )
     .then((vecs) => flat.map((a, i) => ({ ...a, vec: vecs[i] })))
     .catch((error) => {
@@ -72,6 +80,7 @@ export interface SynesthesiaResult {
   inputType: EmbedInput["type"];
   provider: EmbeddingProvider;
   model: string;
+  calibrationMode: CalibrationMode;
   /** ~64 dims of the user's embedding, normalized to [-1, 1], for shader use. */
   signature: number[];
   /** Folded projection of the full embedding for particle geometry. */
@@ -512,9 +521,9 @@ function blendSenseAnchor(
 
 export async function synesthesize(
   input: string | EmbedInput,
-  options: { provider?: EmbeddingProvider } = {},
+  options: { provider?: EmbeddingProvider; calibrationMode?: CalibrationMode } = {},
 ): Promise<SynesthesiaResult> {
-  const config = getEmbeddingConfig(options.provider);
+  const config = getEmbeddingConfig(options.provider, options.calibrationMode);
   const userInput =
     typeof input === "string" ? { type: "text" as const, text: input.trim() } : input;
 
@@ -522,8 +531,15 @@ export async function synesthesize(
     throw new Error("Empty input.");
   }
 
-  const [userVec] = await embedInputs([userInput], { provider: config.provider });
-  const anchors = await getAnchorEmbeddings(config.provider);
+  const [userVec] = await embedInputs([userInput], {
+    provider: config.provider,
+    calibrationMode: config.calibrationMode,
+    inputRole: "query",
+  });
+  const anchors = await getAnchorEmbeddings(
+    config.provider,
+    config.calibrationMode,
+  );
 
   // Group anchors by sense, compute similarity per anchor.
   const bySense: Record<Sense, { index: number; text: string; sim: number }[]> = {
@@ -621,6 +637,7 @@ export async function synesthesize(
     inputType: userInput.type,
     provider: config.provider,
     model: config.model,
+    calibrationMode: config.calibrationMode,
     signature,
     profile,
     vector,

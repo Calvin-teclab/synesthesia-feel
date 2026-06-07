@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { synesthesize } from "@/lib/mapping";
-import { normalizeEmbeddingProvider } from "@/lib/ark";
+import {
+  normalizeCalibrationMode,
+  normalizeEmbeddingProvider,
+} from "@/lib/ark";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +19,7 @@ export async function POST(req: NextRequest) {
     const mode =
       body?.mode === "image" || body?.mode === "video" ? body.mode : "text";
     const provider = normalizeEmbeddingProvider(body?.provider);
+    const calibrationMode = normalizeCalibrationMode(body?.calibrationMode);
 
     if (mode === "image") {
       const imageDataUrl = body?.imageDataUrl;
@@ -34,7 +38,7 @@ export async function POST(req: NextRequest) {
       }
       const result = await synesthesize(
         { type: "image", imageDataUrl },
-        { provider },
+        { provider, calibrationMode },
       );
       return NextResponse.json(result);
     }
@@ -56,7 +60,7 @@ export async function POST(req: NextRequest) {
       }
       const result = await synesthesize(
         { type: "video", videoDataUrl },
-        { provider },
+        { provider, calibrationMode },
       );
       return NextResponse.json(result);
     }
@@ -74,7 +78,7 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
-    const result = await synesthesize(text, { provider });
+    const result = await synesthesize(text, { provider, calibrationMode });
     return NextResponse.json(result);
   } catch (e: any) {
     console.error("[synesthesia] error:", e);

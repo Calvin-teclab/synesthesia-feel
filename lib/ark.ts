@@ -26,15 +26,19 @@ export type EmbedInput =
   | { type: "video"; videoDataUrl: string };
 
 export type EmbeddingProvider = "ark" | "gemini";
+export type CalibrationMode = "compare" | "experience";
 
 export interface EmbedOptions {
   provider?: EmbeddingProvider;
+  calibrationMode?: CalibrationMode;
+  inputRole?: "query" | "anchor";
 }
 
 export interface EmbeddingConfig {
   provider: EmbeddingProvider;
   model: string;
   cacheKey: string;
+  calibrationMode: CalibrationMode;
 }
 
 // Multimodal endpoint may return data as either an object or a single-element array.
@@ -56,19 +60,34 @@ export function normalizeEmbeddingProvider(
   return provider === "gemini" ? "gemini" : "ark";
 }
 
+export function normalizeCalibrationMode(mode: unknown): CalibrationMode {
+  return mode === "experience" ? "experience" : "compare";
+}
+
 export function getEmbeddingConfig(
   provider: EmbeddingProvider = "ark",
+  calibrationMode: CalibrationMode = "compare",
 ): EmbeddingConfig {
   if (provider === "gemini") {
     const model = normalizeGeminiModelName(
       process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-2",
     );
-    return { provider, model, cacheKey: `${provider}:${model}` };
+    return {
+      provider,
+      model,
+      calibrationMode,
+      cacheKey: `${provider}:${model}:${calibrationMode}`,
+    };
   }
 
   const model =
     process.env.ARK_EMBEDDING_MODEL || "doubao-embedding-vision-251215";
-  return { provider, model, cacheKey: `${provider}:${model}` };
+  return {
+    provider,
+    model,
+    calibrationMode,
+    cacheKey: `${provider}:${model}:${calibrationMode}`,
+  };
 }
 
 function normalizeGeminiModelName(model: string): string {
@@ -107,6 +126,8 @@ async function embedMultimodalOne(
   apiKey: string,
   model: string,
   input: EmbedInput,
+  calibrationMode: CalibrationMode,
+  role: EmbedOptions["inputRole"],
 ): Promise<number[]> {
   const multimodalInput =
     input.type === "text"
@@ -120,7 +141,11 @@ async function embedMultimodalOne(
     input: multimodalInput,
     encoding_format: "float",
   };
-  if (supportsArkInstructions(model)) {
+  if (
+    calibrationMode === "experience" &&
+    role !== "anchor" &&
+    supportsArkInstructions(model)
+  ) {
     body.instructions =
       "Target_modality: text/image/video.\nInstruction:Retrieve semantically similar sensory impressions across text, image and video\nQuery:";
   }
@@ -157,9 +182,11 @@ async function embedMultimodal(
   apiKey: string,
   model: string,
   inputs: EmbedInput[],
+  calibrationMode: CalibrationMode,
+  role: EmbedOptions["inputRole"],
 ): Promise<number[][]> {
   return runWithConcurrency(inputs, MULTIMODAL_CONCURRENCY, (input) =>
-    embedMultimodalOne(apiKey, model, input),
+    embedMultimodalOne(apiKey, model, input, calibrationMode, role),
   );
 }
 
@@ -188,21 +215,61 @@ function dataUrlToGeminiPart(dataUrl: string) {
   };
 }
 
-function geminiParts(input: EmbedInput) {
+function geminiTextPrefix(role: EmbedOptions["inputRole"]) {
+  return role === "anchor"
+    ? "联觉感官原型。用于检索眼、耳、鼻、舌、身、意的感官相似性："
+    : "联觉检索查询。把下面内容理解为眼、耳、鼻、舌、身、意的感官印象：";
+}
+
+function calibrateTextInput(
+  text: string,
+  provider: EmbeddingProvider,
+  calibrationMode: CalibrationMode,
+  role: EmbedOptions["inputRole"] = "query",
+) {
+  if (calibrationMode !== "experience") return text;
+  if (role === "anchor") return text;
+  if (provider === "gemini") return `${geminiTextPrefix(role)}${text}`;
+  return `联觉检索查询：${text}`;
+}
+
+function calibrateInputs(
+  inputs: EmbedInput[],
+  provider: EmbeddingProvider,
+  calibrationMode: CalibrationMode,
+  role: EmbedOptions["inputRole"] = "query",
+): EmbedInput[] {
+  return inputs.map((input) =>
+    input.type === "text"
+      ? {
+          ...input,
+          text: calibrateTextInput(input.text, provider, calibrationMode, role),
+        }
+      : input,
+  );
+}
+
+function geminiParts(
+  input: EmbedInput,
+  calibrationMode: CalibrationMode,
+  role: EmbedOptions["inputRole"] = "query",
+) {
   if (input.type === "text") {
     return [{ text: input.text }];
   }
-  return [
-    dataUrlToGeminiPart(
-      input.type === "image" ? input.imageDataUrl : input.videoDataUrl,
-    ),
-  ];
+  const mediaPart = dataUrlToGeminiPart(
+    input.type === "image" ? input.imageDataUrl : input.videoDataUrl,
+  );
+  if (calibrationMode !== "experience" || role === "anchor") return [mediaPart];
+  return [{ text: geminiTextPrefix(role) }, mediaPart];
 }
 
 async function embedGeminiOne(
   apiKey: string,
   model: string,
   input: EmbedInput,
+  calibrationMode: CalibrationMode,
+  role: EmbedOptions["inputRole"],
 ): Promise<number[]> {
   const res = await fetch(
     `${GEMINI_ENDPOINT_BASE}/models/${model}:embedContent`,
@@ -215,7 +282,7 @@ async function embedGeminiOne(
       body: JSON.stringify({
         model: `models/${model}`,
         content: {
-          parts: geminiParts(input),
+          parts: geminiParts(input, calibrationMode, role),
         },
       }),
       cache: "no-store",
@@ -256,8 +323,12 @@ async function embedGemini(
   apiKey: string,
   model: string,
   inputs: EmbedInput[],
+  calibrationMode: CalibrationMode,
+  role: EmbedOptions["inputRole"],
 ): Promise<number[][]> {
-  return runWithConcurrency(inputs, 6, (input) => embedGeminiOne(apiKey, model, input));
+  return runWithConcurrency(inputs, 6, (input) =>
+    embedGeminiOne(apiKey, model, input, calibrationMode, role)
+  );
 }
 
 export async function embed(
@@ -274,7 +345,15 @@ export async function embedInputs(
   inputs: EmbedInput[],
   options: EmbedOptions = {},
 ): Promise<number[][]> {
-  const config = getEmbeddingConfig(options.provider);
+  const config = getEmbeddingConfig(options.provider, options.calibrationMode);
+  const inputRole = options.inputRole ?? "query";
+  const calibratedInputs = calibrateInputs(
+    inputs,
+    config.provider,
+    config.calibrationMode,
+    inputRole,
+  );
+
   if (config.provider === "gemini") {
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
     if (!apiKey) {
@@ -282,7 +361,13 @@ export async function embedInputs(
         "Gemini API Key 未配置。请在 .env.local 中设置 GEMINI_API_KEY。",
       );
     }
-    return embedGemini(apiKey, config.model, inputs);
+    return embedGemini(
+      apiKey,
+      config.model,
+      calibratedInputs,
+      config.calibrationMode,
+      inputRole,
+    );
   }
 
   const apiKey = process.env.ARK_API_KEY;
@@ -294,17 +379,23 @@ export async function embedInputs(
   const model = config.model;
 
   if (isMultimodalModel(model)) {
-    return embedMultimodal(apiKey, model, inputs);
+    return embedMultimodal(
+      apiKey,
+      model,
+      calibratedInputs,
+      config.calibrationMode,
+      inputRole,
+    );
   }
 
-  const mediaInput = inputs.find((input) => input.type !== "text");
+  const mediaInput = calibratedInputs.find((input) => input.type !== "text");
   if (mediaInput) {
     throw new Error(
       "图片/视频联觉需要把 ARK_EMBEDDING_MODEL 设置为多模态 embedding 模型，例如 doubao-embedding-vision-251215。",
     );
   }
 
-  const textInputs = inputs.filter(
+  const textInputs = calibratedInputs.filter(
     (input): input is Extract<EmbedInput, { type: "text" }> =>
       input.type === "text",
   );

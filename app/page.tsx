@@ -17,7 +17,7 @@ import {
   TongueAnchor,
 } from "@/lib/anchors";
 import { playEar } from "@/lib/audio";
-import type { EmbeddingProvider } from "@/lib/ark";
+import type { CalibrationMode, EmbeddingProvider } from "@/lib/ark";
 
 type InputMode = "text" | "image" | "video";
 type WorkbenchTab = "map" | "eval" | "blend";
@@ -38,6 +38,7 @@ interface ApiResult {
   inputType: InputMode;
   provider: EmbeddingProvider;
   model: string;
+  calibrationMode: CalibrationMode;
   signature: number[];
   profile: number[];
   vector: {
@@ -119,15 +120,65 @@ const PROVIDERS: { id: EmbeddingProvider; label: string }[] = [
   { id: "gemini", label: "Gemini" },
 ];
 
+const CALIBRATION_MODES: {
+  id: CalibrationMode;
+  label: string;
+  tooltip: string;
+}[] = [
+  {
+    id: "compare",
+    label: "对比",
+    tooltip: "固定 anchor 与原始输入，用于横向对比不同模型的真实差异",
+  },
+  {
+    id: "experience",
+    label: "体验",
+    tooltip: "使用 provider 校准的联觉检索口径，优先输出稳定体验",
+  },
+];
+
 function hslCss(h: number, s: number, l: number, a = 1) {
   return `hsla(${((h % 360) + 360) % 360}, ${s}%, ${l}%, ${a})`;
 }
+
+const EYE_FORM_LABELS: Record<
+  EyeAnchor["form"],
+  { zh: string; cue: string; description: string }
+> = {
+  orb: {
+    zh: "光球",
+    cue: "圆润呼吸",
+    description: "圆润聚合, 像一团缓慢呼吸的光",
+  },
+  shard: {
+    zh: "棱片",
+    cue: "尖锐折射",
+    description: "尖锐折射, 像碎晶和锋利棱光",
+  },
+  wave: {
+    zh: "波纹",
+    cue: "横向起伏",
+    description: "横向起伏, 像水面和声波的摆动",
+  },
+  ember: {
+    zh: "火星",
+    cue: "向上跳动",
+    description: "向上跳动, 像余烬和火焰的闪烁",
+  },
+  mist: {
+    zh: "雾气",
+    cue: "松散扩散",
+    description: "松散扩散, 像薄雾慢慢铺开",
+  },
+};
 
 export default function Page() {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<InputMode>("text");
   const [embeddingProvider, setEmbeddingProvider] =
     useState<EmbeddingProvider>("ark");
+  const [calibrationMode, setCalibrationMode] =
+    useState<CalibrationMode>("compare");
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageName, setImageName] = useState<string | null>(null);
   const [videoDataUrl, setVideoDataUrl] = useState<string | null>(null);
@@ -215,13 +266,20 @@ export default function Page() {
     [],
   );
 
+  const selectCalibrationMode = useCallback((nextMode: CalibrationMode) => {
+    setCalibrationMode(nextMode);
+    setEvalResult(null);
+    setEvalError(null);
+    setError(null);
+  }, []);
+
   const runEvaluation = useCallback(async () => {
     if (evalLoading) return;
     setEvalLoading(true);
     setEvalError(null);
     try {
       const res = await fetch(
-        `/api/embedding-eval?provider=${embeddingProvider}`,
+        `/api/embedding-eval?provider=${embeddingProvider}&calibrationMode=${calibrationMode}`,
         { cache: "no-store" },
       );
       const json = await res.json();
@@ -232,7 +290,7 @@ export default function Page() {
     } finally {
       setEvalLoading(false);
     }
-  }, [embeddingProvider, evalLoading]);
+  }, [calibrationMode, embeddingProvider, evalLoading]);
 
   const submit = useCallback(
     async (raw?: string, nextMode = mode) => {
@@ -255,10 +313,25 @@ export default function Page() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(
             nextMode === "image"
-              ? { mode: "image", imageDataUrl, provider: embeddingProvider }
+              ? {
+                  mode: "image",
+                  imageDataUrl,
+                  provider: embeddingProvider,
+                  calibrationMode,
+                }
               : nextMode === "video"
-                ? { mode: "video", videoDataUrl, provider: embeddingProvider }
-                : { mode: "text", text: t, provider: embeddingProvider },
+                ? {
+                    mode: "video",
+                    videoDataUrl,
+                    provider: embeddingProvider,
+                    calibrationMode,
+                  }
+                : {
+                    mode: "text",
+                    text: t,
+                    provider: embeddingProvider,
+                    calibrationMode,
+                  },
           ),
         });
         const json = await res.json();
@@ -283,7 +356,15 @@ export default function Page() {
         setLoading(false);
       }
     },
-    [embeddingProvider, imageDataUrl, loading, mode, text, videoDataUrl],
+    [
+      calibrationMode,
+      embeddingProvider,
+      imageDataUrl,
+      loading,
+      mode,
+      text,
+      videoDataUrl,
+    ],
   );
 
   const onSubmit = (e: React.FormEvent) => {
@@ -408,40 +489,73 @@ export default function Page() {
       </header>
 
       <div className="absolute right-4 top-4 z-30 flex items-center gap-2 rounded-full border border-white/10 bg-black/30 px-2 py-1.5 shadow-[0_16px_48px_rgba(0,0,0,0.28)] backdrop-blur-md sm:right-6 sm:top-6">
-        <span className="hidden pl-2 text-[10px] uppercase tracking-[0.22em] text-white/35 sm:inline">
-          模型
-        </span>
-        <div className="flex rounded-full bg-white/[0.04] p-1">
-          {PROVIDERS.map((provider) => (
-            <span key={provider.id} className="group relative">
-              <button
-                type="button"
-                onClick={() => selectEmbeddingProvider(provider.id)}
-                aria-label={`${provider.label} 模型：${
-                  providerModels[provider.id] ?? "读取模型配置中"
-                }`}
-                className={`rounded-full px-3 py-1.5 text-[10px] tracking-[0.14em] transition sm:px-3.5 ${
-                  embeddingProvider === provider.id
-                    ? "bg-white/[0.14] text-white shadow-[0_0_18px_rgba(255,255,255,0.08)]"
-                    : "text-white/42 hover:text-white/76"
-                }`}
-              >
-                {provider.label}
-              </button>
-              <span
-                className={`pointer-events-none absolute top-full z-40 mt-3 whitespace-nowrap rounded-lg border border-white/10 bg-black/72 px-3 py-2 text-[10px] tracking-[0.12em] text-white/72 opacity-0 shadow-[0_16px_44px_rgba(0,0,0,0.38)] backdrop-blur-md transition duration-150 group-hover:translate-y-0 group-hover:opacity-100 ${
-                  provider.id === "gemini"
-                    ? "right-0 translate-x-0"
-                    : "left-1/2 -translate-x-1/2"
-                }`}
-              >
-                <span className="text-white/38">{provider.label}</span>
-                <span className="mx-1.5 text-white/20">/</span>
-                <span>{providerModels[provider.id] ?? "读取模型配置中"}</span>
+        <div className="flex items-center gap-2">
+          <span className="hidden pl-2 text-[10px] uppercase tracking-[0.22em] text-white/35 sm:inline">
+            模型
+          </span>
+          <div className="flex rounded-full bg-white/[0.04] p-1">
+            {PROVIDERS.map((provider) => (
+              <span key={provider.id} className="group relative">
+                <button
+                  type="button"
+                  onClick={() => selectEmbeddingProvider(provider.id)}
+                  aria-label={`${provider.label} 模型：${
+                    providerModels[provider.id] ?? "读取模型配置中"
+                  }`}
+                  className={`rounded-full px-3 py-1.5 text-[10px] tracking-[0.14em] transition sm:px-3.5 ${
+                    embeddingProvider === provider.id
+                      ? "bg-white/[0.14] text-white shadow-[0_0_18px_rgba(255,255,255,0.08)]"
+                      : "text-white/42 hover:text-white/76"
+                  }`}
+                >
+                  {provider.label}
+                </button>
+                <span
+                  className={`pointer-events-none absolute top-full z-40 mt-3 whitespace-nowrap rounded-lg border border-white/10 bg-black/72 px-3 py-2 text-[10px] tracking-[0.12em] text-white/72 opacity-0 shadow-[0_16px_44px_rgba(0,0,0,0.38)] backdrop-blur-md transition duration-150 group-hover:translate-y-0 group-hover:opacity-100 ${
+                    provider.id === "gemini"
+                      ? "right-0 translate-x-0"
+                      : "left-1/2 -translate-x-1/2"
+                  }`}
+                >
+                  <span className="text-white/38">{provider.label}</span>
+                  <span className="mx-1.5 text-white/20">/</span>
+                  <span>{providerModels[provider.id] ?? "读取模型配置中"}</span>
+                </span>
               </span>
-            </span>
-          ))}
+            ))}
+          </div>
         </div>
+
+        <div className="h-5 w-px bg-white/10" />
+
+        <label className="flex items-center gap-2">
+          <span className="hidden text-[10px] uppercase tracking-[0.22em] text-white/35 sm:inline">
+            口径
+          </span>
+          <span className="relative">
+            <select
+              value={calibrationMode}
+              onChange={(event) =>
+                selectCalibrationMode(event.target.value as CalibrationMode)
+              }
+              aria-label="选择口径模式"
+              title={
+                CALIBRATION_MODES.find((item) => item.id === calibrationMode)
+                  ?.tooltip
+              }
+              className="h-[30px] appearance-none rounded-full border border-white/10 bg-white/[0.055] py-1.5 pl-3 pr-7 text-[10px] tracking-[0.14em] text-white/78 outline-none transition hover:border-white/22 focus:border-white/35 focus:bg-white/[0.08]"
+            >
+              {CALIBRATION_MODES.map((item) => (
+                <option key={item.id} value={item.id} className="bg-zinc-950">
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] text-white/42">
+              ▾
+            </span>
+          </span>
+        </label>
       </div>
 
       <AnimatePresence>
@@ -458,7 +572,7 @@ export default function Page() {
       </AnimatePresence>
 
       {/* Left column */}
-      <div className="absolute left-4 sm:left-8 top-0 bottom-0 flex flex-col justify-center gap-4 z-10 pointer-events-auto">
+      <div className="absolute left-4 top-28 bottom-32 z-10 flex flex-col justify-start gap-4 overflow-y-auto pr-2 pointer-events-auto [scrollbar-width:none] sm:left-8">
         <SenseCard
           sense="eye"
           index={0}
@@ -469,9 +583,14 @@ export default function Page() {
           candidates={result?.hits.eye.candidates}
           hint={
             result && (
-              <div className="flex items-center gap-2">
+              <div
+                className="flex min-w-0 items-center gap-2"
+                title={`${result.hits.eye.blend.form.toUpperCase()}：${
+                  EYE_FORM_LABELS[result.hits.eye.blend.form].description
+                }`}
+              >
                 <span
-                  className="w-4 h-4 rounded-full border border-white/20"
+                  className="h-4 w-4 shrink-0 rounded-full border border-white/20"
                   style={{
                     background: hslCss(
                       result.hits.eye.blend.hue,
@@ -479,9 +598,16 @@ export default function Page() {
                       result.hits.eye.blend.light,
                     ),
                   }}
+                  aria-hidden="true"
                 />
-                <span className="text-[10px] text-white/40 uppercase tracking-[0.18em]">
+                <span className="text-[10px] uppercase tracking-[0.18em] text-white/45">
                   {result.hits.eye.blend.form}
+                </span>
+                <span className="text-xs text-white/75">
+                  {EYE_FORM_LABELS[result.hits.eye.blend.form].zh}
+                </span>
+                <span className="min-w-0 truncate text-[10px] text-white/38">
+                  · {EYE_FORM_LABELS[result.hits.eye.blend.form].cue}
                 </span>
               </div>
             )
@@ -523,7 +649,7 @@ export default function Page() {
       </div>
 
       {/* Right column */}
-      <div className="absolute right-4 sm:right-8 top-0 bottom-0 flex flex-col justify-center gap-4 z-10 pointer-events-auto">
+      <div className="absolute right-4 top-28 bottom-32 z-10 flex flex-col justify-start gap-4 overflow-y-auto pl-2 pointer-events-auto [scrollbar-width:none] sm:right-8">
         <SenseCard
           sense="tongue"
           index={3}
@@ -557,8 +683,8 @@ export default function Page() {
       </div>
 
       {/* Bottom input */}
-      <div className="absolute left-0 right-0 bottom-6 flex flex-col items-center gap-3 z-20 px-6">
-        <div className="flex rounded-full border border-white/10 bg-black/25 p-1 backdrop-blur-md">
+      <div className="pointer-events-none absolute left-0 right-0 bottom-6 flex flex-col items-center gap-3 z-20 px-6">
+        <div className="pointer-events-auto flex rounded-full border border-white/10 bg-black/25 p-1 backdrop-blur-md">
           {(["text", "image", "video"] as const).map((item) => (
             <button
               key={item}
@@ -580,7 +706,7 @@ export default function Page() {
 
         <form
           onSubmit={onSubmit}
-          className="flex items-center gap-2 w-full max-w-[560px]"
+          className="pointer-events-auto flex items-center gap-2 w-full max-w-[560px]"
         >
           {mode === "text" ? (
             <input
@@ -664,7 +790,7 @@ export default function Page() {
           </button>
         </form>
 
-        <div className="flex flex-wrap items-center justify-center gap-2 max-w-[680px]">
+        <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 max-w-[680px]">
           {PRESETS.map((p) => (
             <button
               key={p}
@@ -744,8 +870,18 @@ function EmbeddingWorkbench({
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-[10px] uppercase tracking-[0.26em] text-white/38">
-            Embedding Lab
+          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.26em] text-white/38">
+            <span>Embedding Lab</span>
+            <button
+              type="button"
+              aria-label="Embedding Lab 参数说明"
+              className="group relative grid h-3.5 w-3.5 place-items-center rounded-full border border-white/10 bg-white/[0.025] text-[8px] leading-none text-white/35 transition hover:border-white/22 hover:text-white/65 focus:outline-none"
+            >
+              ?
+              <span className="pointer-events-none absolute bottom-full left-0 z-50 mb-2 w-[330px] rounded-lg border border-white/12 bg-zinc-950/95 px-3 py-2 text-left text-[10px] normal-case leading-relaxed tracking-[0.02em] text-white/78 opacity-0 shadow-[0_18px_48px_rgba(0,0,0,0.56)] backdrop-blur-md transition duration-150 group-hover:opacity-100 group-focus:opacity-100">
+                MAP 展示 anchor 与当前输入在同一向量空间里的二维投影。EVAL 用固定样本检查模型是否命中预期 anchor。TOP-K 展示最近候选、混合权重，以及原始 anchor 参数到混合参数的变化。
+              </span>
+            </button>
           </div>
           <div className="mt-1 font-zen text-base text-white/85">
             {activeTab === "map"
@@ -899,7 +1035,7 @@ function EmbeddingMapPanel({
       <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 text-[10px] text-white/38">
         <span className="shrink-0">
           {result
-            ? `${result.provider === "gemini" ? "Gemini" : "火山引擎"} · ${result.vector.dimensions}D · 均幅 ${result.vector.meanAbs.toFixed(4)}`
+            ? `${result.provider === "gemini" ? "Gemini" : "火山引擎"} · ${result.calibrationMode === "experience" ? "体验" : "对比"} · ${result.vector.dimensions}D · 均幅 ${result.vector.meanAbs.toFixed(4)}`
             : "Anchor PCA + 当前输入投影"}
         </span>
         {strongest.length > 0 && (
@@ -1068,15 +1204,19 @@ function BlendRow({ sense, hit }: { sense: Sense; hit: ApiResult["hits"][Sense] 
           {senseLabels[sense].zh}
         </span>
         <div className="min-w-0">
-          <div className="truncate text-xs text-white/74">
-            top-1 {trimText(hit.text, 18)}
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-xs text-white/74">
+              top-1 {trimText(hit.text, 18)}
+            </span>
           </div>
-          <div className="mt-0.5 truncate text-[10px] text-white/34">
-            top-k weights {weights}
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-[10px] text-white/34">
+              top-k weights {weights}
+            </span>
           </div>
         </div>
-        <div className="text-right text-[10px] tabular-nums text-white/46">
-          {metric}
+        <div className="flex items-center justify-end gap-1.5 text-right text-[10px] tabular-nums text-white/46">
+          <span>{metric}</span>
         </div>
       </div>
       <div className="mt-2 h-[3px] overflow-hidden rounded-full bg-white/8">
@@ -1247,8 +1387,8 @@ function BodyHint({ anchor, accent }: { anchor: BodyAnchor; accent: string }) {
         }}
       />
       <span className="text-[10px] text-white/45">
-        颤 <span className="text-white/75">{anchor.tremor.toFixed(1)}</span>
-        　重 <span className="text-white/75">{anchor.gravity.toFixed(2)}</span>
+        颤动 <span className="text-white/75">{anchor.tremor.toFixed(1)}</span>
+        　重量 <span className="text-white/75">{anchor.gravity.toFixed(2)}</span>
       </span>
     </div>
   );
@@ -1275,8 +1415,8 @@ function MindHint({ anchor, accent }: { anchor: MindAnchor; accent: string }) {
         }}
       />
       <span className="text-[10px] text-white/45">
-        澜 <span className="text-white/75">{anchor.turbulence.toFixed(2)}</span>
-        　势 <span className="text-white/75">{anchor.scale.toFixed(2)}</span>
+        湍流 <span className="text-white/75">{anchor.turbulence.toFixed(2)}</span>
+        　扩张 <span className="text-white/75">{anchor.scale.toFixed(2)}</span>
       </span>
     </div>
   );

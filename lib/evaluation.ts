@@ -1,4 +1,5 @@
 import {
+  CalibrationMode,
   EmbedInput,
   EmbeddingProvider,
   embedInputs,
@@ -113,11 +114,12 @@ function emptySenseMetrics() {
 
 async function computeEvaluation(
   provider: EmbeddingProvider,
+  calibrationMode: CalibrationMode,
 ): Promise<EvaluationResult> {
-  const anchors = await getAnchorEmbeddings(provider);
+  const anchors = await getAnchorEmbeddings(provider, calibrationMode);
   const vectors = await embedInputs(
     EVAL_CASES.map((item): EmbedInput => ({ type: "text", text: item.text })),
-    { provider },
+    { provider, calibrationMode, inputRole: "query" },
   );
 
   const evaluated = EVAL_CASES.map((item, index) => {
@@ -198,12 +200,18 @@ async function computeEvaluation(
   };
 }
 
-export function runEmbeddingEvaluation(provider: EmbeddingProvider = "ark") {
-  const config = getEmbeddingConfig(provider);
+export function runEmbeddingEvaluation(
+  provider: EmbeddingProvider = "ark",
+  calibrationMode: CalibrationMode = "compare",
+) {
+  const config = getEmbeddingConfig(provider, calibrationMode);
   const cached = evalCache.get(config.cacheKey);
   if (cached) return cached;
 
-  const pending = computeEvaluation(config.provider).catch((error) => {
+  const pending = computeEvaluation(
+    config.provider,
+    config.calibrationMode,
+  ).catch((error) => {
     evalCache.delete(config.cacheKey);
     throw error;
   });
