@@ -1,6 +1,6 @@
 # 多模态感知-联觉通感 · Synesthesia Engine
 
-> Copyright (c) 2026 Peter. All rights reserved.
+> Copyright (c) 2026 Calvin-teclab. All rights reserved.
 >
 > This project is publicly visible for demonstration, evaluation, and portfolio review only. No license is granted to copy, modify, distribute, commercialize, host, deploy, or claim derivative ownership of the code, visual design, assets, documentation, or concept without prior written permission from the copyright holder.
 
