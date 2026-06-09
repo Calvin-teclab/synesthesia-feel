@@ -1,5 +1,9 @@
 # 多模态感知-联觉通感 · Synesthesia Engine
 
+> Copyright (c) 2026 Peter. All rights reserved.
+>
+> This project is publicly visible for demonstration, evaluation, and portfolio review only. No license is granted to copy, modify, distribute, commercialize, host, deploy, or claim derivative ownership of the code, visual design, assets, documentation, or concept without prior written permission from the copyright holder.
+
 把任意一个字、一句诗、一段情绪，一张图片，或一段视频，投射到佛家所说的「眼耳鼻舌身意」。
 
 ![运行界面](assets/screenshot.png)
